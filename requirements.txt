@@ -5,15 +5,13 @@ streamlit==1.38.0
 requests==2.32.3
 python-dotenv==1.0.1
 beautifulsoup4==4.13.4
-# passlib[bcrypt]==1.7.4 # Comment out or remove this line
-# bcrypt>=4.0.0 # Comment out or remove this line
-passlib[bcrypt]==1.7.4 # Re-add passlib with bcrypt extra
-py-bcrypt==0.4 # ADDED: Pin py-bcrypt for compatibility with passlib
+passlib[bcrypt]==1.7.4
+py-bcrypt==0.4
 slowapi==0.1.9
-pydantic[email]==2.10.4
-pydantic-settings==2.6.1
-email-validator==2.2.0
-python-multipart==0.0.20
+pydantic[email]
+pydantic-settings
+email-validator
+python-multipart
 
 # Database & ORM
 sqlalchemy==2.0.41
@@ -23,7 +21,7 @@ alembic==1.14.1
 # Task Queue & Message Broker
 celery==5.4.0
 redis==5.2.1
-eventlet==0.36.1 # ADDED: Required for async Celery workers
+eventlet==0.36.1
 
 # Cloud & Storage
 firebase-admin==7.0.0
@@ -39,14 +37,17 @@ torchvision==0.22.1
 ollama==0.5.1
 
 # Media & Document Processing
-yt-dlp==2024.12.13
+yt-dlp==2024.07.25
 Pillow==10.4.0
 PyMuPDF==1.25.2
 python-docx==1.1.2
+
+# Enhanced YouTube Bypass
+selenium==4.15.2
+webdriver-manager==4.0.1
 
 # Development & Testing
 pytest==8.3.4
 pytest-asyncio==0.24.0
 httpx==0.28.1
-
 python-jose[cryptography]

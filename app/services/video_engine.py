@@ -1,278 +1,157 @@
-# app/services/video_engine.py
+# app/workers/tasks.py
+import asyncio
+from app.celery_app import celery_app
+from app.db import crud
+from app.db.base import get_db
+from app.services import video_engine, utils
+import json
 import os
-import subprocess
-import shutil
-import re
-import uuid
-from PIL import Image # For image saving
-import time # For unique temp filenames (if needed outside uuid)
+import time
+from pydub import AudioSegment
 
-try:
-    import torch
-    from diffusers import DiffusionPipeline
-    DIFFUSERS_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️ Warning: Could not import diffusers: {e}")
-    DIFFUSERS_AVAILABLE = False
-except Exception as e:
-    print(f"⚠️ Warning: CUDA/xFormers compatibility issue or other error with diffusers import: {e}")
-    DIFFUSERS_AVAILABLE = False
+async def run_with_progress_updates(db, job_id, start_percent, end_percent, total_duration, task_coroutine, description):
+    update_interval = 5
+    estimated_task_duration = max(total_duration / 10, update_interval) # Ensure at least one update cycle
+    num_updates = int(estimated_task_duration / update_interval)
+    percent_per_update = (end_percent - start_percent) / num_updates if num_updates > 0 else (end_percent - start_percent)
 
-# Use the correct import path for the new structure
-from app.services import utils
-from app.services import firebase_utils # <-- ADDED IMPORT
-from app.core.config import settings # <-- ADDED IMPORT
+    async def update_progress():
+        for i in range(1, num_updates + 1):
+            await asyncio.sleep(update_interval)
+            current_percent = start_percent + int(percent_per_update * i)
+            time_remaining = int(estimated_task_duration - (i * update_interval))
+            eta_description = f"{description} (est. {time_remaining}s left)"
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": eta_description, "percentage": current_percent})
 
+    progress_task = asyncio.create_task(update_progress())
+    result = await task_coroutine
+    progress_task.cancel()
+    crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"{description.replace('...','')} complete!", "percentage": end_percent})
+    return result
 
-# Define static directories (matching main.py and settings.py)
-STATIC_FILES_ROOT_DIR = settings.STATIC_FILES_ROOT_DIR
-STATIC_GENERATED_DIR = settings.STATIC_GENERATED_DIR # This is 'static/generated'
-TEMP_DOWNLOAD_DIR = utils.TEMP_DOWNLOAD_DIR # Use the shared temp directory from utils
-os.makedirs(STATIC_GENERATED_DIR, exist_ok=True) # Ensure the main generated directory exists
+@celery_app.task(bind=True)
+def run_videoclip_job(self, job_id: str, user_id: int, video_url: str, add_captions: bool, aspect_ratio: str):
+    asyncio.run(_async_videoclip_job(job_id, user_id, video_url, add_captions, aspect_ratio))
 
-
-class LocalStableDiffusionGenerator:
-    _instance = None
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(LocalStableDiffusionGenerator, cls).__new__(cls)
-            cls._instance.pipeline = None
-            cls._instance.is_model_loaded = False
-        return cls._instance
-
-    def load_model(self):
-        if not DIFFUSERS_AVAILABLE:
-            return False, "Diffusers library not available or CUDA/xFormers compatibility issue."
-        if self._instance.is_model_loaded: return True, "Model already loaded."
-        
-        try:
-            print("Loading Stable Diffusion model to GPU...");
-            self._instance.pipeline = DiffusionPipeline.from_pretrained(
-                "SG161222/RealVisXL_V4.0",
-                torch_dtype=torch.float16,
-                use_safetensors=True,
-                variant="fp16"
-            ).to("cuda")
-            self._instance.pipeline.enable_model_cpu_offload()
-            self._instance.is_model_loaded = True
-            return True, "Model loaded successfully."
-        except Exception as e:
-            self._instance.pipeline = None
-            self._instance.is_model_loaded = False
-            return False, str(e)
-
-    def generate_image(self, prompt: str, width: int = 1024, height: int = 1024) -> str | None:
-        if not self.pipeline:
-            print("❌ Stable Diffusion pipeline not loaded. Attempting to load now.")
-            success, msg = self.load_model()
-            if not success:
-                print(f"❌ Failed to load model for generation: {msg}")
-                return None
-
-        temp_image_path = None
-        try:
-            p_prompt = f"cinematic shot, masterpiece, 4k, photorealistic, {prompt}"
-            n_prompt = "deformed, ugly, blurry, low quality, cartoon, anime, disfigured, bad hands"
-            
-            image: Image.Image = self.pipeline(prompt=p_prompt, negative_prompt=n_prompt, width=width, height=height, num_inference_steps=25).images[0]
-            
-            # Save to a temporary location before uploading
-            temp_image_filename = f"temp_thumbnail_{uuid.uuid4().hex}.png"
-            temp_image_path = os.path.join(TEMP_DOWNLOAD_DIR, temp_image_filename) # Use TEMP_DOWNLOAD_DIR
-            image.save(temp_image_path)
-            
-            # --- UPLOAD TO FIREBASE ---
-            destination_blob_name = f"thumbnails/{temp_image_filename}" # Path in Firebase Storage
-            public_url = firebase_utils.upload_to_storage(temp_image_path, destination_blob_name)
-            
-            return public_url
-        except Exception as e:
-            print(f"❌ Image generation or upload failed: {e}")
-            return None
-        finally:
-            if temp_image_path and os.path.exists(temp_image_path):
-                try:
-                    os.remove(temp_image_path)
-                    print(f"Cleaned up local temp image: {temp_image_path}")
-                except OSError as e:
-                    print(f"Error removing temp image file {temp_image_path}: {e}")
-
-sd_generator = LocalStableDiffusionGenerator()
-
-def _is_safe_path(path):
-    # Only allow alphanumeric, dash, underscore, dot, and forward/backslash
-    return bool(re.match(r'^[\w\-./:\\]+$', path))
-
-def create_ass_file(words_data, output_path):
-    style_header = "[V4+ Styles]"
-    style_format = "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
-    style_values = f"Style: Default,Impact,48,&H00FFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,1,2,10,10,20,1"
-    event_header = "[Events]"
-    event_format = "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
-    
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write("[Script Info]\nTitle: Generated by Alchemize AI\n\n")
-        f.write(f"{style_header}\n{style_format}\n{style_values}\n\n")
-        f.write(f"{event_header}\n{event_format}\n")
-
-        for word_info in words_data:
-            start_time = f"{int(word_info['start'] // 3600)}:{int((word_info['start'] % 3600) // 60):02}:{word_info['start'] % 60:05.2f}"
-            end_time = f"{int(word_info['end'] // 3600)}:{int((word_info['end'] % 3600) // 60):02}:{word_info['end'] % 60:05.2f}"
-            text = word_info['word'].upper().replace('"', '\\"').replace('{', '\\{').replace('}', '\\}')
-            dialogue_line = f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,," + "{\\c&H00FFFF&}" + text
-            f.write(dialogue_line + "\n")
-
-# Modified: output_path is now a filename, full path is constructed inside
-# This function still returns a local path, which will be uploaded by process_single_clip
-def render_clip_with_ffmpeg(input_path, output_filename, aspect_ratio="9:16", add_captions=False, words_data=None, add_music=False):
-    ass_path = None
-    
-    # Construct the full output path within the STATIC_GENERATED_DIR (which is a local temp staging dir now)
-    full_output_path = os.path.join(STATIC_GENERATED_DIR, output_filename)
-
-    # Basic safety check for paths
-    for p in [input_path, full_output_path]:
-        if not _is_safe_path(p):
-            raise ValueError(f"Unsafe file path detected: {p}")
-            
+async def _async_videoclip_job(job_id: str, user_id: int, video_url: str, add_captions: bool, aspect_ratio: str):
+    db = next(get_db())
+    source_video_path, audio_path = None, None
     try:
-        video_input = ["-i", input_path]
-        audio_input_path = utils.get_background_music()
-        if add_music and audio_input_path:
-             music_input = ["-i", audio_input_path]
-             audio_map = "[1:a]volume=0.1[music];[0:a][music]amix=inputs=2[outa]"
-             audio_output_map = ["-map", "[outa]"]
-        else:
-            music_input = []
-            audio_map = ""
-            audio_output_map = ["-map", "0:a?"]
-
-        w, h = map(int, aspect_ratio.split(':'))
-        crop_filter = f"crop=ih*{w}/{h}:ih"
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Validating video...", "percentage": 5})
+        can_validate, _ = utils.validate_video_request(video_url)
+        if not can_validate: raise ValueError("Video validation failed.")
         
-        subtitle_filter = ""
-        if add_captions and words_data:
-            ass_path = os.path.join(TEMP_DOWNLOAD_DIR, f"temp_captions_{uuid.uuid4().hex}.ass") # Use TEMP_DOWNLOAD_DIR for subtitles
-            if not _is_safe_path(ass_path):
-                raise ValueError(f"Unsafe temp file path for subtitles: {ass_path}")
-            create_ass_file(words_data, ass_path)
-            subtitle_filter = f",subtitles={ass_path}:force_style='FontName=Impact,FontSize=48'"
-            
-        filter_complex = f"[0:v]{crop_filter},scale=1080:-2{subtitle_filter}[outv]"
-        if audio_map:
-            filter_complex = f"{audio_map};{filter_complex}"
-
-        # Try CUDA first
-        command_cuda = [
-            "ffmpeg", "-hwaccel", "cuda", *video_input, *music_input,
-            "-filter_complex", filter_complex, "-map", "[outv]", *audio_output_map,
-            "-c:v", "h264_nvenc", "-preset", "p5", "-cq", "24", "-y", full_output_path
-        ]
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Downloading...", "percentage": 10})
+        video_path_info = utils.download_media(video_url, is_video=True)
+        if not video_path_info['success']: raise ValueError(f"Video download failed: {video_path_info['error']}")
+        source_video_path = video_path_info['path']
         
-        print(f"🚀 Executing FFmpeg command with CUDA acceleration for {output_filename}...")
-        try:
-            result = subprocess.run(command_cuda, check=True, capture_output=True, text=True, timeout=300)
-            print(f"✅ FFmpeg rendering complete with CUDA: {full_output_path}")
-            print("FFmpeg stdout:", result.stdout)
-            print("FFmpeg stderr:", result.stderr)
-            return True, full_output_path # Return the full local path for success
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
-            error_output = e.stderr if hasattr(e, 'stderr') else str(e)
-            print(f"⚠️ CUDA rendering failed for {output_filename}: {e}. Falling back to CPU. FFmpeg Error: {error_output}")
-            
-            # CPU Fallback
-            command_cpu = [
-                "ffmpeg", *video_input, *music_input,
-                "-filter_complex", filter_complex, "-map", "[outv]", *audio_output_map,
-                "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-y", full_output_path
-            ]
-            
-            print(f"🚀 Executing FFmpeg command with CPU rendering for {output_filename}...")
-            result = subprocess.run(command_cpu, check=True, capture_output=True, text=True, timeout=300)
-            print(f"✅ FFmpeg rendering complete with CPU: {full_output_path}")
-            print("FFmpeg stdout:", result.stdout)
-            print("FFmpeg stderr:", result.stderr)
-            return True, full_output_path # Return the full local path for success
-
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        error_output = e.stderr if hasattr(e, 'stderr') else str(e)
-        print(f"❌ FFmpeg Error for {output_filename}: {error_output}")
-        return False, f"FFmpeg failed: {error_output[:500]}"
-    except Exception as e:
-        # Catch any other unexpected errors during setup/execution
-        return False, f"An unexpected error occurred during rendering: {e}"
-    finally:
-        if ass_path and os.path.exists(ass_path):
-            try:
-                os.remove(ass_path)
-                print(f"Cleaned up local temp subtitle file: {ass_path}")
-            except OSError as e:
-                print(f"Error removing temp subtitle file {ass_path}: {e}")
-
-# Modified: process_single_clip now uploads to Firebase and returns the public URL.
-# It also receives full_words_data to filter for the relevant words.
-def process_single_clip(source_video_path, moment, flags, user_id, index, full_words_data):
-    # Temp path for the initial cut video
-    base_clip_filename = f"temp_cut_clip_{user_id}_{index}_{uuid.uuid4().hex}.mp4"
-    base_clip_path = os.path.join(TEMP_DOWNLOAD_DIR, base_clip_filename)
-    
-    # Final filename for the rendered clip (will be uploaded)
-    final_clip_filename = f"clip_{user_id}_{index}_{uuid.uuid4().hex}.mp4" 
-    
-    local_rendered_clip_path = None
-    try:
-        if not utils.cut_video_clip(source_video_path, moment['start'], moment['duration'], base_clip_path):
-            raise IOError("Failed to cut base clip.")
-            
-        clip_words_data = None
-        if flags.get('add_captions', False):
-            print(f"Transcribing clip {index} for captions...")
-            # Filter the full words data to get only words relevant to this clip's time range
-            clip_words_data = [
-                word_info for word_info in full_words_data
-                if word_info['start'] >= moment['start'] and word_info['end'] <= moment['start'] + moment['duration']
-            ]
-            if not clip_words_data:
-                print(f"Warning: No word-level timestamps found for clip {index} within its time range.")
-
-        # Call render_clip_with_ffmpeg which saves to STATIC_GENERATED_DIR locally
-        success, local_rendered_clip_path = render_clip_with_ffmpeg(
-            input_path=base_clip_path, 
-            output_filename=final_clip_filename, # Pass just the filename
-            aspect_ratio=flags.get('aspect_ratio', "9:16"), 
-            add_captions=flags.get('add_captions', False),
-            words_data=clip_words_data, # Pass filtered words data
-            add_music=flags.get('add_music', False)
-        )
+        audio_info = utils.download_media(video_url, is_video=False)
+        if not audio_info['success']: raise ValueError("Failed to extract audio.")
+        audio_path = audio_info['path']
+        audio_duration = AudioSegment.from_mp3(audio_path).duration_seconds
         
-        if success and local_rendered_clip_path:
-            # --- UPLOAD TO FIREBASE ---
-            destination_blob_name = f"videoclips/{final_clip_filename}" # Path in Firebase Storage
-            public_url = firebase_utils.upload_to_storage(local_rendered_clip_path, destination_blob_name)
+        transcript_coro = utils.get_or_create_transcript(video_url, user_id, job_id)
+        transcript_result = await run_with_progress_updates(db, job_id, 20, 50, audio_duration, transcript_coro, "Transcribing...")
+        if not transcript_result['success']: raise ValueError(f"Transcription failed: {transcript_result['error']}")
+        
+        full_words_data = transcript_result['data']['words']
+        
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Finding viral moments...", "percentage": 55})
+        speech_segments = utils.detect_silence_and_chunk(audio_path)
+        if not speech_segments: raise ValueError("Could not detect any speech segments.")
+        
+        text_chunks = [' '.join(w['word'] for w in full_words_data if w['start'] >= s['start'] and w['end'] <= s['end']) for s in speech_segments]
+        viral_indices = analyze_content_chunks(text_chunks, user_id)
+        if not viral_indices: raise ValueError("AI analysis found no high-scoring moments.")
+        
+        moments = [{'start': speech_segments[i]['start'], 'duration': speech_segments[i]['end'] - speech_segments[i]['start']} for i in viral_indices]
+        urls = []
+        flags = {"add_captions": add_captions, "aspect_ratio": aspect_ratio, "add_music": True}
+        
+        for i, moment in enumerate(moments):
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Rendering clip {i+1}/{len(moments)}...", "percentage": 60+int(((i+1)/len(moments))*35)})
+            clip_result = video_engine.process_single_clip(source_video_path, moment, flags, user_id, i+1, full_words_data)
+            if not clip_result['success']: raise Exception(f"Failed to process clip {i+1}: {clip_result['error']}")
+            urls.append(clip_result['url'])
             
-            if public_url:
-                return {'success': True, 'url': public_url}
-            else:
-                raise Exception("Failed to upload clip to Firebase Storage.")
-        else:
-            raise RuntimeError(f"FFmpeg rendering failed for {final_clip_filename}: {local_rendered_clip_path}")
-
+        crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Clips generated!", "percentage": 100}, results={"clip_urls": urls})
     except Exception as e:
         import traceback
-        print(f"Error processing clip {index}: {e}")
         print(traceback.format_exc())
-        return {'success': False, 'error': str(e)}
+        crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Video clipping job failed: {str(e)}")
     finally:
-        # Clean up temporary files
-        if os.path.exists(base_clip_path):
-            try:
-                os.remove(base_clip_path)
-                print(f"Cleaned up local temp base clip: {base_clip_path}")
-            except OSError as e:
-                print(f"Error removing temp base clip file {base_clip_path}: {e}")
-        if local_rendered_clip_path and os.path.exists(local_rendered_clip_path):
-            try:
-                os.remove(local_rendered_clip_path)
-                print(f"Cleaned up local rendered clip: {local_rendered_clip_path}")
-            except OSError as e:
-                print(f"Error removing local rendered clip file {local_rendered_clip_path}: {e}")
+        utils.cleanup_temp_files(patterns=[f"temp_*{job_id}*.*", f"final_clip_*{job_id}*.*", os.path.basename(source_video_path or ''), os.path.basename(audio_path or '')])
+
+
+# --- Other Functions (No Change) ---
+@celery_app.task(bind=True)
+def run_content_repurpose_job(self, job_id: str, user_id: int, content_input: str, platforms: list[str]):
+    asyncio.run(_async_content_repurpose_job(job_id, user_id, content_input, platforms))
+async def _async_content_repurpose_job(job_id: str, user_id: int, content_input: str, platforms: list[str]):
+    db = next(get_db())
+    try:
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Ingesting content...", "percentage": 5})
+        ingestion_result = await utils._ingest_text_or_article_sync(content_input, user_id)
+        if not ingestion_result['success']: raise ValueError(f"Content ingestion failed: {ingestion_result['error']}")
+        content_to_process = ingestion_result['content']
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Analyzing content...", "percentage": 20})
+        analysis_prompt = f"Analyze this content and extract key insights, tone, and audience.\n\nCONTENT:\n{content_to_process[:4000]}"
+        content_analysis = utils.run_ai_generation(analysis_prompt, user_id, model="gpt-4o")
+        if not content_analysis: raise Exception("AI content analysis failed.")
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating posts...", "percentage": 60})
+        generation_prompt = f"""
+        You are an expert content strategist. Transform the source content into social media posts for: {', '.join(platforms)}.
+        SOURCE CONTENT:\n{content_to_process[:12000]}
+        """
+        drafts = utils.run_ai_generation(generation_prompt, user_id, model="gpt-4o")
+        if not drafts: raise Exception("AI content generation failed.")
+        polished_drafts = utils.local_ai_polish(drafts)
+        results = {"analysis": content_analysis, "posts": polished_drafts}
+        crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Content suite generated!", "percentage": 100}, results=results)
+    except Exception as e:
+        crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Content repurposing failed: {str(e)}")
+
+@celery_app.task(bind=True)
+def generate_thumbnail_job(self, job_id: str, user_id: int, prompt_text: str):
+    db = next(get_db())
+    try:
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating prompts...", "percentage": 10})
+        prompt_gen_prompt = f'Based on the content, generate 3 striking prompts for an AI image generator to create a thumbnail. Respond with ONLY a valid JSON list of strings.\nCONTENT: {prompt_text}'
+        image_prompts = []
+        for _ in range(3):
+            response_str = utils.run_ai_generation(prompt_gen_prompt, user_id, "gpt-4o-mini", 500, expect_json=True)
+            if response_str:
+                try:
+                    prompts = json.loads(response_str)
+                    if isinstance(prompts, list) and prompts: image_prompts = prompts; break
+                except (json.JSONDecodeError, TypeError): pass
+            time.sleep(1)
+        if not image_prompts: raise Exception("Failed to generate valid image prompts.")
+        urls = []
+        for i, prompt in enumerate(image_prompts):
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Generating thumbnail {i+1}/{len(image_prompts)}...", "percentage": 20+int(((i+1)/len(image_prompts))*75)})
+            url = video_engine.sd_generator.generate_image(prompt, 1280, 720)
+            if url:
+                urls.append(url)
+                utils.track_usage("stable-diffusion-local", user_id, 'thumbnail', custom_cost=0.0)
+        if not urls: raise Exception("No thumbnails were successfully generated.")
+        crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Thumbnails ready!", "percentage": 100}, results={"thumbnail_urls": urls})
+    except Exception as e:
+        crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Thumbnail generation failed: {str(e)}")
+
+def analyze_content_chunks(text_chunks, user_id):
+    scores = []
+    for i, chunk in enumerate(text_chunks):
+        if len(chunk.strip()) < 80: scores.append({'index': i, 'score': 0}); continue
+        prompt = f'On a scale of 1-10, how engaging is this text for a short video clip? Answer with a single integer.\nTEXT: "{chunk}"'
+        score = 0
+        for _ in range(2):
+            response = utils.run_ai_generation(prompt, user_id, "gpt-4o-mini", 10, 0.2)
+            score = utils._parse_score_from_response(response)
+            if score > 0: break
+        scores.append({'index': i, 'score': score})
+    sorted_chunks = sorted(scores, key=lambda x: x['score'], reverse=True)
+    indices = [c['index'] for c in sorted_chunks if c['score'] >= 5]
+    if not indices and sorted_chunks: indices = [c['index'] for c in sorted_chunks[:2]]
+    return indices[:3]

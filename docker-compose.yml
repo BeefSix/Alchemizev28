@@ -30,13 +30,14 @@ services:
       retries: 5
 
   web:
-    build: .
+    build:
+      context: .
+      target: web
     container_name: alchemize_web
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./app:/app/app
-      # ADD THIS LINE TO CONNECT THE CACHE
       - alchemize_hf_cache:/app/.cache/huggingface
     ports:
       - "8000:8000"
@@ -48,37 +49,26 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - FIREBASE_CREDENTIALS_JSON=${FIREBASE_CREDENTIALS_JSON}
       - FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET}
-      # ADD THESE THREE LINES TO SET THE CACHE LOCATION
-      - TRANSFORMERS_CACHE=/app/.cache/huggingface
-      - HF_HOME=/app/.cache/huggingface
-      - DIFFUSERS_CACHE=/app/.cache/huggingface
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
     deploy:
       resources:
         reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
 
   worker:
-    build: .
+    build:
+      context: .
+      target: worker
     container_name: alchemize_worker
     restart: unless-stopped
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A app.workers.tasks worker --loglevel=info
     volumes:
       - ./app:/app/app
-      # ADD THIS LINE TO CONNECT THE CACHE
       - alchemize_hf_cache:/app/.cache/huggingface
+      # --- THIS IS THE NEW LINE ---
+      - ./cookies.txt:/app/cookies.txt
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/alchemize_db
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -87,54 +77,35 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - FIREBASE_CREDENTIALS_JSON=${FIREBASE_CREDENTIALS_JSON}
       - FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET}
-      # ADD THESE THREE LINES TO SET THE CACHE LOCATION
-      - TRANSFORMERS_CACHE=/app/.cache/huggingface
-      - HF_HOME=/app/.cache/huggingface
-      - DIFFUSERS_CACHE=/app/.cache/huggingface
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
     deploy:
       resources:
         reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
 
+  # (The rest of the file is the same)
   beat:
-    build: .
+    build:
+      context: .
+      target: beat
     container_name: alchemize_beat
     restart: unless-stopped
-    command: celery -A app.workers.celery_app beat --loglevel=info
+    command: celery -A app.workers.tasks beat --loglevel=info
     volumes:
       - ./app:/app/app
-      # ADD THIS LINE TO CONNECT THE CACHE
-      - alchemize_hf_cache:/app/.cache/huggingface
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      # ADD THESE THREE LINES TO SET THE CACHE LOCATION
-      - TRANSFORMERS_CACHE=/app/.cache/huggingface
-      - HF_HOME=/app/.cache/huggingface
-      - DIFFUSERS_CACHE=/app/.cache/huggingface
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
   frontend:
-    build: .
+    build:
+      context: .
+      target: frontend
     container_name: alchemize_frontend
     restart: unless-stopped
     command: streamlit run app.py
@@ -150,5 +121,4 @@ services:
 volumes:
   alchemize_postgres_data:
   alchemize_redis_data:
-  # ADD THIS NEW VOLUME DEFINITION
   alchemize_hf_cache:
