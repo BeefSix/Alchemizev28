@@ -39,6 +39,7 @@ services:
     volumes:
       - ./app:/app/app
       - alchemize_hf_cache:/app/.cache/huggingface
+      - alchemize_static:/app/static
     ports:
       - "8000:8000"
     environment:
@@ -49,6 +50,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - FIREBASE_CREDENTIALS_JSON=${FIREBASE_CREDENTIALS_JSON}
       - FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET}
+      - TRANSFORMERS_CACHE=/app/.cache/huggingface
+      - HF_HOME=/app/.cache/huggingface
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -67,7 +70,7 @@ services:
     volumes:
       - ./app:/app/app
       - alchemize_hf_cache:/app/.cache/huggingface
-      # --- THIS IS THE NEW LINE ---
+      - alchemize_static:/app/static
       - ./cookies.txt:/app/cookies.txt
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/alchemize_db
@@ -77,6 +80,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - FIREBASE_CREDENTIALS_JSON=${FIREBASE_CREDENTIALS_JSON}
       - FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET}
+      - TRANSFORMERS_CACHE=/app/.cache/huggingface
+      - HF_HOME=/app/.cache/huggingface
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -85,7 +90,6 @@ services:
         reservations:
           devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
 
-  # (The rest of the file is the same)
   beat:
     build:
       context: .
@@ -95,9 +99,14 @@ services:
     command: celery -A app.workers.tasks beat --loglevel=info
     volumes:
       - ./app:/app/app
+      - alchemize_hf_cache:/app/.cache/huggingface
     environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/alchemize_db
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY}
+      - TRANSFORMERS_CACHE=/app/.cache/huggingface
+      - HF_HOME=/app/.cache/huggingface
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -108,13 +117,17 @@ services:
       target: frontend
     container_name: alchemize_frontend
     restart: unless-stopped
-    command: streamlit run app.py
     volumes:
       - ./app:/app/app
+      - ./.streamlit:/app/.streamlit
     ports:
       - "8501:8501"
     environment:
       - API_URL=http://web:8000
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+      - STREAMLIT_SERVER_ENABLE_CORS=false
+      - STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false
     depends_on:
       - web
 
@@ -122,3 +135,4 @@ volumes:
   alchemize_postgres_data:
   alchemize_redis_data:
   alchemize_hf_cache:
+  alchemize_static:
