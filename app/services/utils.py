@@ -154,7 +154,8 @@ def method_2_android_client(url, base_name, is_video):
             'X-YouTube-Identity-Token': base64.b64encode(f"android_client_{random.randint(1000,9999)}".encode()).decode(),
         },
         'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-        'format': 'worst[height<=480]/worst' if is_video else 'worstaudio[abr<=128]/worstaudio',
+        # FIXED: More forgiving format selection
+        'format': 'best[height<=720]/best' if is_video else 'bestaudio/best',
         'extractor_args': {
             'youtube': {
                 'player_client': ['android'],
@@ -164,8 +165,15 @@ def method_2_android_client(url, base_name, is_video):
         },
         'cookiefile': '/app/cookies.txt',
         'sleep_interval': random.uniform(1, 3),
-        'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}] if is_video else [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+        'ignoreerrors': True,  # ADDED: Continue on errors
+        'no_warnings': False,  # ADDED: Show warnings for debugging
     }
+    
+    # ADDED: Don't specify postprocessors - let yt-dlp handle format
+    if is_video:
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}]
+    else:
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
     
     time.sleep(random.uniform(2, 5))
     
@@ -185,7 +193,8 @@ def method_3_ios_client(url, base_name, is_video):
             'X-YouTube-Client-Version': '18.48.3',
         },
         'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-        'format': 'worst[height<=720]/worst' if is_video else 'worstaudio/worst',
+        # FIXED: More forgiving format selection
+        'format': 'best[height<=720]/best' if is_video else 'bestaudio/best',
         'extractor_args': {
             'youtube': {
                 'player_client': ['ios'],
@@ -194,8 +203,14 @@ def method_3_ios_client(url, base_name, is_video):
         },
         'cookiefile': '/app/cookies.txt',
         'sleep_interval': random.uniform(2, 4),
-        'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}] if is_video else [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}],
+        'ignoreerrors': True,  # ADDED
+        'no_warnings': False,  # ADDED
     }
+    
+    if is_video:
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}]
+    else:
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
     
     time.sleep(random.uniform(3, 6))
     

@@ -68,7 +68,7 @@ def get_job(db: Session, job_id: str):
 def update_job_full_status(
     db: Session, 
     job_id: str, 
-    status: str | None = None, # Make status optional, only update if provided
+    status: str | None = None,
     progress_details: dict | None = None, 
     results: dict | None = None, 
     error_message: str | None = None
@@ -79,14 +79,16 @@ def update_job_full_status(
             job.status = status
         
         if progress_details is not None:
-            # Ensure percentage is always set for UI display if progress details are provided
+            # Ensure percentage is always set for UI display
             step = progress_details.get("step", 0)
             total_steps = progress_details.get("total_steps", 1)
-            progress_details["percentage"] = int((step / total_steps) * 100) if total_steps > 0 else 0
-            job.progress_details = json.dumps(progress_details) # Store as JSON string
+            progress_details["percentage"] = int((step / total_steps) * 100) if total_steps > 0 else progress_details.get("percentage", 0)
+            # FIXED: Convert to JSON string before storing
+            job.progress_details = json.dumps(progress_details)
         
         if results is not None:
-            job.results = json.dumps(results) # Store as JSON string
+            # FIXED: Convert to JSON string before storing
+            job.results = json.dumps(results)
         
         if error_message is not None:
             job.error_message = error_message
