@@ -17,72 +17,44 @@ import random
 from app.db import crud
 from app.db.base import get_db
 from app.core.config import settings
+from app.services.youtube_monitor import monitor
 
 client = OpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
 STATIC_GENERATED_DIR = settings.STATIC_GENERATED_DIR
 TEMP_DOWNLOAD_DIR = os.path.join(STATIC_GENERATED_DIR, "temp_downloads")
 os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
 
-# --- HELPER FUNCTIONS ---
 
-def get_random_user_agent():
-    agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
-    ]
-    return random.choice(agents)
-
-def get_enhanced_ydl_opts(is_video=True, user_agent=None):
-    if user_agent is None: user_agent = get_random_user_agent()
-    return {
-        'user_agent': user_agent, 'referer': 'http://googleusercontent.com/youtube.com/',
-        'http_headers': { 'Accept-Language': 'en-US,en;q=0.9', 'Connection': 'keep-alive' },
-        'sleep_interval': random.uniform(1, 3), 'max_sleep_interval': 5,
-        'noplaylist': True, 'cookiefile': '/app/cookies.txt'
-    }
-
-def _standard_download(url, base_name, is_video):
-    out_tmpl = os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s")
-    ydl_opts = get_enhanced_ydl_opts(is_video)
-    ydl_opts.update({
-        'outtmpl': out_tmpl,
-        'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]' if is_video else 'bestaudio/best',
-        'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}] if is_video else [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
-    })
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl: info = ydl.extract_info(url, download=True)
-    return _find_downloaded_file(base_name, info, is_video)
-
-def _selenium_assisted(url, base_name, is_video):
+def _selenium_undetected_download(url, base_name, is_video):
+    """Primary download method using undetected-chromedriver to bypass advanced bot detection."""
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-    except ImportError: raise Exception("Selenium not available")
-    
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
+        import undetected_chromedriver as uc
+    except ImportError:
+        raise Exception("undetected-chromedriver is not installed.")
+
+    options = uc.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
     driver = None
     try:
-        driver = webdriver.Chrome(options=chrome_options)
+        driver = uc.Chrome(options=options)
         driver.get(url)
-        time.sleep(random.uniform(3, 6))
+        time.sleep(random.uniform(4, 7)) # Allow page to fully load and run scripts
         
         cookies = driver.get_cookies()
         cookie_file = os.path.join(TEMP_DOWNLOAD_DIR, f"cookies_{base_name}.txt")
         with open(cookie_file, 'w') as f:
             for c in cookies:
-                f.write(f"{c['domain']}\tTRUE\t{c['path']}\t{str(c['secure']).upper()}\t0\t{c['name']}\t{c['value']}\n")
+                f.write(f"{c['domain']}\tTRUE\t{c['path']}\t{str(c['secure']).upper()}\t{int(c.get('expiry', 0)) or 0}\t{c['name']}\t{c['value']}\n")
 
         out_tmpl = os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s")
-        ydl_opts = get_enhanced_ydl_opts(is_video)
-        ydl_opts['cookiefile'] = cookie_file
-        ydl_opts.update({
-            'outtmpl': out_tmpl,
-            'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]' if is_video else 'bestaudio/best',
-        })
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl: info = ydl.extract_info(url, download=True)
+        ydl_opts = {
+            'outtmpl': out_tmpl, 'noplaylist': True, 'cookiefile': cookie_file,
+            'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' if is_video else 'bestaudio/best',
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
         os.remove(cookie_file)
         return _find_downloaded_file(base_name, info, is_video)
     finally:
@@ -91,7 +63,7 @@ def _selenium_assisted(url, base_name, is_video):
 def _find_downloaded_file(base_name, info, is_video):
     expected_ext = '.mp4' if is_video else '.mp3'
     files = glob.glob(os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.*"))
-    if not files: raise FileNotFoundError(f"Download failed for: {base_name}")
+    if not files: raise FileNotFoundError(f"Download failed for {base_name}")
     actual_file = files[0]
     if not actual_file.endswith(expected_ext):
         new_path = os.path.splitext(actual_file)[0] + expected_ext
@@ -100,45 +72,45 @@ def _find_downloaded_file(base_name, info, is_video):
     return {'success': True, 'path': actual_file, 'duration': info.get('duration', 0)}
 
 def download_media(url: str, is_video: bool):
+    """Main download function that prioritizes the most robust method."""
     base_name = f"temp_{int(time.time())}_{uuid.uuid4().hex}"
-    methods_to_try = [_standard_download, _selenium_assisted]
-    for method in methods_to_try:
-        try:
-            result = method(url, base_name, is_video)
-            if result.get('success'): return result
-        except Exception as e:
-            print(f"Method {method.__name__} failed: {e}")
+    try:
+        result = _selenium_undetected_download(url, base_name, is_video)
+        if result.get('success'):
+            monitor.log_attempt(url, "selenium_undetected", True)
+            return result
+    except Exception as e:
+        monitor.log_attempt(url, "selenium_undetected", False, str(e))
+        print(f"CRITICAL: Undetected Chromedriver failed: {e}")
+    
     return {'success': False, 'error': 'All download methods failed.'}
 
 # (The rest of the file is unchanged)
 def is_valid_url(url: str): return url.startswith('http://') or url.startswith('https://')
 def scrape_url(url: str):
     try:
-        headers = {'User-Agent': get_random_user_agent()}
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}, timeout=15)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
-        for el in soup(["script", "style", "nav", "footer", "aside", "form", "button", "header", "img", "svg"]): el.decompose()
+        for el in soup(["script", "style", "nav", "footer", "aside"]): el.decompose()
         return ' '.join(soup.stripped_strings)[:15000]
-    except Exception as e: return f"Error: Failed to scrape URL: {e}"
+    except Exception: return "Error: Failed to scrape URL."
 def cleanup_temp_files(patterns=None):
-    if patterns is None: patterns = ['temp_*.*']
+    if patterns is None: patterns = ['temp_*.*', 'cookies_*.txt']
     for pattern in patterns:
-        search_path = os.path.join(TEMP_DOWNLOAD_DIR, pattern)
-        for f_path in glob.glob(search_path):
+        for f_path in glob.glob(os.path.join(TEMP_DOWNLOAD_DIR, pattern)):
             try:
                 if os.path.abspath(f_path).startswith(os.path.abspath(TEMP_DOWNLOAD_DIR)): os.remove(f_path)
             except OSError: pass
 def validate_video_request(video_url: str):
     try:
-        ydl_opts = get_enhanced_ydl_opts()
-        ydl_opts['quiet'] = True
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl: info = ydl.extract_info(video_url, download=False)
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'cookiefile': '/app/cookies.txt'}) as ydl:
+            info = ydl.extract_info(video_url, download=False)
         if info.get('duration', 0) > 3600: return False, "Video is too long."
         return True, info
     except Exception as e: return False, f"Could not validate URL: {e}"
 def generate_hash(text: str): return hashlib.sha256(text.encode('utf-8')).hexdigest()
-def is_youtube_url(url: str): return any(re.search(p, url) for p in [r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/', r'(https?://)?(www\.)?youtu\.be/'])
+def is_youtube_url(url: str): return any(re.search(p, url) for p in [r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/'])
 def transcribe_audio_robust(audio_file_path: str):
     if not client: return {"success": False, "error": "OpenAI client not initialized."}
     try:
@@ -150,6 +122,7 @@ async def get_or_create_transcript(source_url: str, user_id: int, job_id: str):
     db = next(get_db())
     if cached := crud.get_cached_transcript(db, source_url):
         audio_info = download_media(source_url, is_video=False)
+        if not audio_info.get('success'): return audio_info
         return {'success': True, 'data': cached, 'audio_file': audio_info.get('path')}
     audio_info = download_media(source_url, is_video=False)
     if not audio_info['success']: return audio_info
@@ -190,11 +163,11 @@ def detect_silence_and_chunk(audio_path: str):
             return [{'start': 0, 'end': duration}]
         segments, start_time = [], 0.0
         for end_time in timestamps:
-            if (end_time - start_time) > 0.5: segments.append({'start': start_time, 'end': end_time})
+            if (end_time - start_time) > 5: segments.append({'start': start_time, 'end': end_time})
             start_time = end_time
         duration = float(subprocess.check_output(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', audio_path]).strip())
-        if (duration - start_time) > 0.5: segments.append({'start': start_time, 'end': duration})
-        return [s for s in segments if (s['end'] - s['start']) > 5] or [{'start': 0, 'end': 30.0}]
+        if (duration - start_time) > 5: segments.append({'start': start_time, 'end': duration})
+        return segments if segments else [{'start': 0, 'end': 30.0}]
     except Exception: return [{'start': 0, 'end': 30.0}]
 def check_usage_limits(user_id: int):
     db = next(get_db())
