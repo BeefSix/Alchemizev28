@@ -12,9 +12,9 @@ FROM python:3.10-slim AS final
 
 WORKDIR /app
 
-# Install runtime dependencies including a stable version of Chrome and necessary tools
+# Install runtime dependencies including fonts and Chrome
 RUN apt-get update && apt-get install -y \
-    libpq5 ffmpeg curl wget gnupg unzip ca-certificates apt-transport-https jq \
+    libpq5 ffmpeg curl wget gnupg unzip ca-certificates apt-transport-https jq fonts-dejavu-core \
     && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \

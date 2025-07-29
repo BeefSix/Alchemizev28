@@ -8,10 +8,10 @@ beautifulsoup4==4.13.4
 passlib[bcrypt]==1.7.4
 py-bcrypt==0.4
 slowapi==0.1.9
-pydantic[email]==2.10.4
-pydantic-settings==2.6.1
-email-validator==2.2.0
-python-multipart==0.0.20
+pydantic[email]
+pydantic-settings
+email-validator
+python-multipart
 
 # Database & ORM
 sqlalchemy==2.0.41
@@ -34,7 +34,6 @@ transformers==4.44.2
 accelerate==1.8.1
 torch==2.7.1
 torchvision==0.22.1
-ollama==0.5.1
 
 # Media & Document Processing
 yt-dlp==2024.12.13

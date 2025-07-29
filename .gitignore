@@ -47,5 +47,5 @@ Thumbs.db
 *.log
 usage_log.json
 
-# Streamlit
-.streamlit/
+# REMOVED: .streamlit/ directory should NOT be ignored
+# We need this directory for Docker configuration
