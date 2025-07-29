@@ -36,15 +36,16 @@ torch==2.7.1
 torchvision==0.22.1
 
 # Media & Document Processing
-yt-dlp==2024.12.13
+# CRITICAL: Updated to latest version for 2025 bypass features
+yt-dlp==2025.01.04
 Pillow==10.4.0
 PyMuPDF==1.25.2
 python-docx==1.1.2
 
-# CRITICAL: Advanced YouTube Bypass System
-selenium==4.15.2
+# CRITICAL: Updated YouTube Bypass System
+selenium==4.27.1
 undetected-chromedriver==3.5.5
-webdriver-manager==4.0.1
+webdriver-manager==4.0.2
 
 # Development & Testing
 pytest==8.3.4
