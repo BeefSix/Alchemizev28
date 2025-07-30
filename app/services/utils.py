@@ -1,3 +1,4 @@
+# app/services/utils.py - SIMPLE FIX for your main project
 import os
 import glob
 import time
@@ -12,7 +13,6 @@ import json
 from pydub import AudioSegment
 import uuid
 import random
-import base64
 
 from app.db import crud
 from app.db.base import get_db
@@ -23,372 +23,88 @@ STATIC_GENERATED_DIR = settings.STATIC_GENERATED_DIR
 TEMP_DOWNLOAD_DIR = os.path.join(STATIC_GENERATED_DIR, "temp_downloads")
 os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
 
-# --- FIXED YOUTUBE BYPASS SYSTEM ---
-
-def get_rotating_user_agents():
-    """Updated user agents for 2025"""
-    return [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0',
-    ]
-
-def method_1_fixed_undetected_chrome(url, base_name, is_video):
-    """FIXED: Undetected Chrome with proper setup"""
-    print("🚀 Method 1: Fixed Undetected Chrome")
-    try:
-        import undetected_chromedriver as uc  # type: ignore
-        from selenium.webdriver.common.by import By  # type: ignore
-        from selenium.webdriver.support.ui import WebDriverWait  # type: ignore
-        from selenium.webdriver.support import expected_conditions as EC  # type: ignore
-    except ImportError:
-        raise Exception("undetected-chromedriver not installed")
-    
-    options = uc.ChromeOptions()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--disable-plugins')
-    options.add_argument('--disable-images')
-    options.add_argument('--user-data-dir=/tmp/chrome-user-data')  # FIX: Use accessible directory
-    options.add_argument('--data-path=/tmp/chrome-data')  # FIX: Use accessible directory
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    
-    driver = None
-    try:
-        # FIX: Don't let it auto-detect Chrome, specify a path or use system Chrome
-        driver = uc.Chrome(options=options, driver_executable_path='/usr/bin/google-chrome')
-        
-        driver.get("https://www.youtube.com")
-        time.sleep(random.uniform(2, 4))
-        
-        driver.get(url)
-        time.sleep(random.uniform(3, 6))
-        
-        # Extract cookies
-        cookies = driver.get_cookies()
-        cookie_file = os.path.join(TEMP_DOWNLOAD_DIR, f"uc_cookies_{base_name}.txt")
-        with open(cookie_file, 'w') as f:
-            f.write("# Netscape HTTP Cookie File\n")
-            for cookie in cookies:
-                secure = "TRUE" if cookie.get('secure', False) else "FALSE"
-                http_only = "TRUE" if cookie.get('httpOnly', False) else "FALSE"
-                expiry = int(cookie.get('expiry', 0))
-                f.write(f"{cookie['domain']}\t{http_only}\t{cookie['path']}\t{secure}\t{expiry}\t{cookie['name']}\t{cookie['value']}\n")
-        
-        driver.quit()
-        driver = None
-        
-        return _download_with_ydl_fixed(url, base_name, is_video, cookie_file)
-        
-    except Exception as e:
-        if driver:
-            try:
-                driver.quit()
-            except:
-                pass
-        raise e
-
-def method_2_fixed_android_client(url, base_name, is_video):
-    """FIXED: Android Client with proper format selection"""
-    print("🚀 Method 2: Fixed Android Client")
-    
-    ydl_opts = {
-        'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-        'user_agent': 'com.google.android.youtube/19.02.39 (Linux; U; Android 14; SM-G991B) gzip',
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android_music', 'android'],  # FIX: Try music client first
-                'skip': ['webpage'],
-                'innertube_host': ['music.youtube.com', 'youtubei.googleapis.com'],
-            }
-        },
-        'sleep_interval': random.uniform(1, 3),
-        'ignoreerrors': False,
-        'no_warnings': False,
-    }
-    
-    # FIX: Better format selection
-    if is_video:
-        ydl_opts['format'] = 'worst[height<=480][ext=mp4]/worst[ext=mp4]/worst'
-        ydl_opts['postprocessors'] = [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}]
-    else:
-        ydl_opts['format'] = 'worstaudio[ext=m4a]/worstaudio[ext=webm]/worstaudio/worst'
-        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
-    
-    time.sleep(random.uniform(2, 5))
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-    
-    return _find_downloaded_file(base_name, info, is_video)
-
-def method_3_fixed_youtube_music(url, base_name, is_video):
-    """NEW: YouTube Music client - often bypasses restrictions"""
-    print("🚀 Method 3: YouTube Music Client")
-    
-    ydl_opts = {
-        'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android_music'],  # Music client often works
-                'skip': ['webpage', 'configs'],
-            }
-        },
-        'sleep_interval': random.uniform(2, 4),
-        'ignoreerrors': False,
-    }
-    
-    if is_video:
-        ydl_opts['format'] = 'worst[height<=360]/worst'
-    else:
-        ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
-    
-    time.sleep(random.uniform(3, 6))
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-    
-    return _find_downloaded_file(base_name, info, is_video)
-
-def method_4_fixed_web_with_po_token(url, base_name, is_video):
-    """FIXED: Web client with PO token handling"""
-    print("🚀 Method 4: Web Client with PO Token")
-    
-    # FIX: Generate or extract PO token (simplified approach)
-    po_token = _generate_po_token()  # You'll need to implement this
-    
-    ydl_opts = {
-        'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['web'],
-                'po_token': [f'web+{po_token}'] if po_token else None,
-                'skip': ['webpage'],
-            }
-        },
-        'cookiefile': '/app/cookies.txt',
-        'sleep_interval': random.uniform(2, 5),
-    }
-    
-    if is_video:
-        ydl_opts['format'] = 'worst[height<=720]/worst'
-    else:
-        ydl_opts['format'] = 'worstaudio/worst'
-    
-    time.sleep(random.uniform(1, 3))
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-    
-    return _find_downloaded_file(base_name, info, is_video)
-
-def method_5_fallback_direct(url, base_name, is_video):
-    """FALLBACK: Direct download attempt with minimal options"""
-    print("🚀 Method 5: Fallback Direct Download")
-    
-    ydl_opts = {
-        'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-        'format': 'worst/best',  # FIX: Try anything available
-        'ignoreerrors': True,
-        'no_warnings': True,
-        'extractaudio': not is_video,
-        'audioformat': 'mp3' if not is_video else None,
-        'embed_subs': False,
-        'writesubtitles': False,
-        'writeautomaticsub': False,
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-    
-    return _find_downloaded_file(base_name, info, is_video)
-
-def _generate_po_token():
-    """Generate a basic PO token - this is a simplified version"""
-    # In a real implementation, you'd need to extract this from YouTube's page
-    # For now, return None to skip PO token
-    return None
-
-def _download_with_ydl_fixed(url, base_name, is_video, cookie_file=None):
-    """FIXED: Helper function for yt-dlp downloads"""
-    ydl_opts = {
-        'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-        'cookiefile': cookie_file or '/app/cookies.txt',
-        'ignoreerrors': True,
-    }
-    
-    # FIX: Much more permissive format selection
-    if is_video:
-        ydl_opts['format'] = 'worst[ext=mp4]/worst[ext=webm]/worst'
-    else:
-        ydl_opts['format'] = 'worstaudio[ext=m4a]/worstaudio[ext=webm]/worstaudio/worst'
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-    
-    # Clean up temporary cookie file
-    if cookie_file and cookie_file != '/app/cookies.txt' and os.path.exists(cookie_file):
-        try:
-            os.remove(cookie_file)
-        except:
-            pass
-    
-    return _find_downloaded_file(base_name, info, is_video)
-
-def _find_downloaded_file(base_name, info, is_video):
-    """FIXED: Find and verify downloaded files"""
-    downloaded_files = glob.glob(os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.*"))
-    
-    if not downloaded_files:
-        raise FileNotFoundError(f"Download failed for: {base_name}")
-    
-    actual_file_path = downloaded_files[0]
-    expected_ext = '.mp4' if is_video else '.mp3'
-    
-    # Convert to expected format if needed
-    if not actual_file_path.endswith(expected_ext):
-        renamed_path = os.path.splitext(actual_file_path)[0] + expected_ext
-        try:
-            if is_video:
-                # Convert video to mp4
-                subprocess.run([
-                    'ffmpeg', '-i', actual_file_path, 
-                    '-c:v', 'libx264', '-c:a', 'aac', 
-                    '-y', renamed_path
-                ], check=True, capture_output=True)
-            else:
-                # Convert audio to mp3
-                subprocess.run([
-                    'ffmpeg', '-i', actual_file_path, 
-                    '-acodec', 'mp3', '-y', renamed_path
-                ], check=True, capture_output=True)
-            
-            os.remove(actual_file_path)
-            actual_file_path = renamed_path
-        except Exception as e:
-            print(f"Warning: Could not convert {actual_file_path}: {e}")
-    
-    return {
-        'success': True,
-        'title': info.get('title', 'N/A'),
-        'duration': info.get('duration', 0),
-        'path': actual_file_path
-    }
-
 def download_media(url: str, is_video: bool):
-    """FIXED: Main download function with updated methods"""
-    print(f"🎯 Starting FIXED YouTube bypass for: {url}")
+    """SIMPLE YouTube download - like your alpha but for main project"""
+    print(f"🎯 Simple YouTube download: {url}")
     
     timestamp = int(time.time())
-    base_name = f"temp_{timestamp}_{uuid.uuid4().hex[:8]}_{'video' if is_video else 'audio'}"
+    base_name = f"temp_{timestamp}_{'video' if is_video else 'audio'}"
     
-    # UPDATED: New method priority order
-    methods = [
-        method_2_fixed_android_client,    # Start with Android - often most reliable
-        method_3_fixed_youtube_music,     # NEW: Music client
-        method_5_fallback_direct,         # Direct approach
-        method_4_fixed_web_with_po_token, # Web with PO token
-        method_1_fixed_undetected_chrome, # Chrome as last resort due to setup complexity
-    ]
-    
-    for i, method in enumerate(methods, 1):
-        try:
-            print(f"🔄 Attempting method {i}/{len(methods)}: {method.__name__}")
-            result = method(url, base_name, is_video)
-            
-            if result['success']:
-                print(f"✅ SUCCESS with {method.__name__}!")
-                print(f"📁 File: {result['path']}")
-                print(f"📹 Title: {result.get('title', 'Unknown')}")
-                print(f"⏱️ Duration: {result.get('duration', 0)} seconds")
-                return result
-                
-        except Exception as e:
-            print(f"❌ {method.__name__} failed: {e}")
-            
-            # Progressive delays
-            if i < len(methods):
-                delay = random.uniform(1, 3) * (i * 0.5)
-                print(f"⏳ Waiting {delay:.1f}s before next method...")
-                time.sleep(delay)
-            continue
-    
-    # If all methods fail, check if it's a specific video issue
-    try:
-        # Try to get basic video info to determine if video exists
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if info.get('live_status') == 'is_live':
-                return {'success': False, 'error': 'Live streams are not supported.'}
-            elif info.get('availability') in ['private', 'premium_only', 'subscriber_only']:
-                return {'success': False, 'error': f'Video is {info.get("availability", "restricted")}.'}
-    except:
-        pass
-    
-    return {
-        'success': False, 
-        'error': 'All YouTube bypass methods failed. Video may be restricted, private, or temporarily unavailable.'
+    # Simple approach like your alpha
+    ydl_opts = {
+        'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
+        'cookiefile': '/app/cookies.txt',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'sleep_interval': random.uniform(1, 3),
+        'noplaylist': True,
     }
-
-# KEEP ALL OTHER EXISTING FUNCTIONS (validation, transcript, etc.) UNCHANGED
-# Just replace the download_media function and the methods it calls
-
-def validate_video_request(video_url: str):
-    """FIXED: More permissive validation"""
+    
+    if is_video:
+        ydl_opts['format'] = 'best[height<=720][ext=mp4]/best[ext=mp4]'
+        final_filename = f"{base_name}.mp4"
+    else:
+        ydl_opts['format'] = 'bestaudio/best'
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]
+        final_filename = f"{base_name}.mp3"
+    
     try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extractaudio': False,
-            'format': 'worst',  # Use worst quality for validation
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+        
+        # Find the downloaded file
+        downloaded_files = glob.glob(os.path.join(TEMP_DOWNLOAD_DIR, f"{base_name}.*"))
+        if not downloaded_files:
+            raise FileNotFoundError(f"No files downloaded for: {base_name}")
+        
+        actual_file = downloaded_files[0]
+        expected_path = os.path.join(TEMP_DOWNLOAD_DIR, final_filename)
+        
+        # Rename if needed
+        if actual_file != expected_path:
+            try:
+                os.rename(actual_file, expected_path)
+                actual_file = expected_path
+            except:
+                pass
+        
+        return {
+            'success': True,
+            'title': info.get('title', 'N/A'),
+            'duration': info.get('duration', 0),
+            'path': actual_file
         }
         
+    except Exception as e:
+        print(f"Download failed: {e}")
+        return {'success': False, 'error': str(e)}
+
+def validate_video_request(video_url: str):
+    """Simple validation"""
+    try:
+        if not is_youtube_url(video_url):
+            return False, "Not a valid YouTube URL."
+        
+        ydl_opts = {'quiet': True, 'no_warnings': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
             duration = info.get('duration', 0)
             
-            if duration > settings.DAILY_LIMITS.get('max_video_duration', 3600):
+            max_duration = settings.DAILY_LIMITS.get('max_video_duration', 3600)
+            if duration > max_duration:
                 return False, f"Video is too long ({duration//60} minutes)."
-            
-            # Check if it's live or restricted
-            if info.get('live_status') == 'is_live':
-                return False, "Live streams are not supported."
-            
-            availability = info.get('availability', 'public')
-            if availability in ['private', 'premium_only', 'subscriber_only']:
-                return False, f"Video is {availability}."
             
             return True, info
             
     except Exception as e:
-        # Don't fail validation completely - let download methods handle it
-        print(f"🤖 Validation warning: {e}")
-        return True, {
-            "duration": 1800,  # Assume reasonable duration
-            "title": "Video (validation bypassed)",
-            "id": extract_video_id(video_url) or "unknown"
-        }
-
-# MISSING FUNCTIONS - ADD THESE BACK
-
-def get_random_user_agent():
-    """Select a random user agent from the pool"""
-    return random.choice(get_rotating_user_agents())
+        # Don't fail validation completely
+        print(f"Validation warning: {e}")
+        return True, {"duration": 1800, "title": "Video", "id": "unknown"}
 
 def extract_video_id(url):
-    """Extract video ID from YouTube URL"""
     patterns = [
         r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)',
         r'youtube\.com\/v\/([^&\n?#]+)',
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, url)
         if match:
@@ -399,7 +115,10 @@ def is_valid_url(url: str):
     return url.startswith('http://') or url.startswith('https://')
 
 def is_youtube_url(url: str):
-    patterns = [r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/', r'(https?://)?(www\.)?youtu\.be/']
+    patterns = [
+        r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/',
+        r'(https?://)?(www\.)?youtu\.be/'
+    ]
     return any(re.search(p, url) for p in patterns)
 
 def generate_hash(text: str):
@@ -407,18 +126,21 @@ def generate_hash(text: str):
 
 def scrape_url(url: str):
     try:
-        headers = {'User-Agent': get_random_user_agent()}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Remove unwanted elements
         for el in soup(["script", "style", "nav", "footer", "aside", "form", "button", "header", "img", "svg"]):
             el.decompose()
+        
         text_content = ' '.join(soup.stripped_strings)
         return text_content[:15000]
     except Exception as e:
         return f"Error: Failed to scrape URL: {e}"
 
-def cleanup_temp_files(patterns=['temp_*.*', 'chunk_*.mp3', '*.pdf', '*.docx', 'thumbnail_*.png', 'final_clip_*.mp4', 'uc_cookies_*.txt']):
+def cleanup_temp_files(patterns=['temp_*.*', 'chunk_*.mp3', '*.pdf', '*.docx', 'thumbnail_*.png', 'final_clip_*.mp4']):
     print("🧹 Cleaning up temporary files...")
     os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
     for p in patterns:
@@ -432,7 +154,7 @@ def cleanup_temp_files(patterns=['temp_*.*', 'chunk_*.mp3', '*.pdf', '*.docx', '
                 print(f"Error removing {f_path}: {e}")
 
 def transcribe_audio_robust(audio_file_path: str):
-    if not client: 
+    if not client:
         return {"success": False, "error": "OpenAI client not initialized."}
     try:
         with open(audio_file_path, 'rb') as f:
@@ -512,59 +234,28 @@ def track_usage(model: str, user_id: int, operation: str, input_tokens: int = 0,
     except Exception as e:
         print(f"Error in track_usage: {e}")
 
-async def _ingest_text_or_article_sync(user_input: str, user_id: int):
-    if is_youtube_url(user_input):
-        transcript_result = await get_or_create_transcript(user_input, user_id, "ingestion_job")
-        return {'success': True, 'content': transcript_result['data']['text']} if transcript_result['success'] else transcript_result
-    elif is_valid_url(user_input):
-        content = scrape_url(user_input)
-        return {'success': False, 'error': content} if content.startswith("Error:") else {'success': True, 'content': content}
-    else:
-        return {'success': True, 'content': user_input}
-
-def run_ai_generation(prompt: str, user_id: int, model: str = "gpt-4o-mini", max_tokens: int = 2000, temperature: float = 0.5, expect_json: bool = False):
-    if not client: 
-        return None
-    
+def check_usage_limits(user_id: int, operation_type: str = 'video'):
     db = next(get_db())
-    request_hash = generate_hash(f"{prompt}{model}{max_tokens}{temperature}{expect_json}")
-    cached_response = crud.get_cached_response(db, request_hash)
-    if cached_response:
-        return cached_response
-    
     try:
-        response = client.chat.completions.create(
-            model=model, 
-            messages=[{"role": "user", "content": prompt}], 
-            max_tokens=max_tokens, 
-            temperature=temperature,
-            response_format={"type": "json_object"} if expect_json else {"type": "text"}
-        )
-        result_text = response.choices[0].message.content
-        usage = response.usage
+        videos_today = crud.get_user_videos_today(db, user_id)
+        daily_limit = settings.DAILY_LIMITS.get('videos_per_user', 10)
         
-        track_usage(model, user_id, 'generation', usage.prompt_tokens, usage.completion_tokens)
-        crud.set_cached_response(db, request_hash, result_text)
-        return result_text
+        if videos_today >= daily_limit:
+            return False, f"Daily video limit reached ({videos_today}/{daily_limit})."
+        
+        usage_summary = crud.get_usage_summary(db, user_id)
+        daily_cost = usage_summary.get('daily_cost', 0)
+        cost_limit = settings.DAILY_LIMITS.get('total_daily_cost', 15.00)
+        
+        if daily_cost >= cost_limit:
+            return False, f"Daily cost limit reached (${daily_cost:.2f}/${cost_limit:.2f})."
+        
+        return True, ""
     except Exception as e:
-        print(f"Error: AI generation failed: {e}")
-        return None
+        print(f"Error checking usage limits: {e}")
+        return True, ""
 
-def _parse_score_from_response(response_text: str) -> int:
-    if not response_text:
-        return 0
-    score_match = re.search(r'\d+', response_text)
-    if score_match:
-        return int(score_match.group())
-    number_words = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10}
-    for word, value in number_words.items():
-        if word in response_text.lower():
-            return value
-    return 0
-
-def local_ai_polish(content: str):
-    return content
-
+# Keep other utility functions as needed for your project...
 def cut_video_clip(video_file: str, start_time: float, duration: float, output_name: str):
     try:
         command = ['ffmpeg', '-ss', str(start_time), '-i', video_file, '-t', str(duration), '-c', 'copy', '-y', output_name]
@@ -573,10 +264,6 @@ def cut_video_clip(video_file: str, start_time: float, duration: float, output_n
     except subprocess.CalledProcessError as e:
         print(f"Error cutting video clip: {e.stderr}")
         return False
-
-def get_background_music():
-    music_file = "music/background.mp3"
-    return music_file if os.path.exists(music_file) else None
 
 def detect_silence_and_chunk(audio_path: str):
     try:
@@ -613,90 +300,3 @@ def detect_silence_and_chunk(audio_path: str):
     except Exception as e:
         print(f"Error during silence detection: {e}")
         return [{'start': 0, 'end': 15.0}]
-
-def check_usage_limits(user_id: int, operation_type: str = 'video'):
-    db = next(get_db())
-    try:
-        videos_today = crud.get_user_videos_today(db, user_id)
-        daily_limit = settings.DAILY_LIMITS.get('videos_per_user', 10)
-        
-        if videos_today >= daily_limit:
-            return False, f"Daily video limit reached ({videos_today}/{daily_limit})."
-        
-        usage_summary = crud.get_usage_summary(db, user_id)
-        daily_cost = usage_summary.get('daily_cost', 0)
-        cost_limit = settings.DAILY_LIMITS.get('total_daily_cost', 15.00)
-        
-        if daily_cost >= cost_limit:
-            return False, f"Daily cost limit reached (${daily_cost:.2f}/${cost_limit:.2f})."
-        
-        return True, ""
-    except Exception as e:
-        print(f"Error checking usage limits: {e}")
-        return True, ""
-
-def get_or_create_transcript_sync(source_url: str, user_id: int = None):
-    """Synchronous version of transcript generation for content processing"""
-    db = next(get_db())
-    
-    # Check cache first
-    cached = crud.get_cached_transcript(db, source_url)
-    if cached:
-        return {'success': True, 'data': cached}
-    
-    # Download audio
-    audio_info = download_media(source_url, is_video=False)
-    if not audio_info['success']:
-        return audio_info
-    
-    audio_path = audio_info['path']
-    audio = AudioSegment.from_mp3(audio_path)
-    
-    # Process in chunks if needed
-    chunks = [audio[i:i + 900000] for i in range(0, len(audio), 900000)]  # 15 min chunks
-    all_words, full_text, total_cost = [], "", 0.0
-    
-    for i, chunk in enumerate(chunks):
-        chunk_path = os.path.join(TEMP_DOWNLOAD_DIR, f"temp_chunk_sync_{i}.mp3")
-        chunk.export(chunk_path, format="mp3")
-        
-        result = transcribe_audio_robust(chunk_path)
-        if result['success']:
-            offset = i * 900  # 15 minutes in seconds
-            for w in result['data']['words']:
-                w['start'] += offset
-                w['end'] += offset
-                all_words.append(w)
-            full_text += result['data']['text'] + " "
-        
-        # Calculate cost
-        total_cost += (len(chunk) / 60000) * 0.006  # $0.006 per minute
-        
-        # Cleanup chunk
-        try:
-            os.remove(chunk_path)
-        except:
-            pass
-    
-    if not full_text.strip():
-        return {'success': False, 'error': 'Empty transcript generated'}
-    
-    final_transcript = {
-        "text": full_text.strip(),
-        "words": all_words
-    }
-    
-    # Cache the result
-    crud.set_cached_transcript(db, source_url, final_transcript)
-    
-    # Track usage if user_id provided
-    if user_id:
-        crud.track_usage(db, user_id, "whisper-1", "transcription", total_cost)
-    
-    # Cleanup audio file
-    try:
-        os.remove(audio_path)
-    except:
-        pass
-    
-    return {'success': True, 'data': final_transcript}

@@ -6,12 +6,12 @@ requests==2.32.3
 python-dotenv==1.0.1
 beautifulsoup4==4.13.4
 passlib[bcrypt]==1.7.4
-py-bcrypt==0.4
+bcrypt>=4.0.0
 slowapi==0.1.9
-pydantic[email]
-pydantic-settings
-email-validator
-python-multipart
+pydantic[email]==2.10.4
+pydantic-settings==2.6.1
+email-validator==2.2.0
+python-multipart==0.0.20
 
 # Database & ORM
 sqlalchemy==2.0.41
@@ -21,7 +21,6 @@ alembic==1.14.1
 # Task Queue & Message Broker
 celery==5.4.0
 redis==5.2.1
-eventlet==0.36.1
 
 # Cloud & Storage
 firebase-admin==7.0.0
@@ -34,21 +33,21 @@ transformers==4.44.2
 accelerate==1.8.1
 torch==2.7.1
 torchvision==0.22.1
+ollama==0.2.7
 
-# Media & Document Processing
-# CRITICAL: Updated to latest version for 2025 bypass features
-yt-dlp==2025.01.04
-Pillow==10.4.0
+# Media & Document Processing - USE WORKING VERSION
+yt-dlp==2024.12.13
+Pillow==11.0.0
+gTTS==2.5.4
 PyMuPDF==1.25.2
 python-docx==1.1.2
 
-# CRITICAL: Updated YouTube Bypass System
-selenium==4.27.1
-undetected-chromedriver==3.5.5
-webdriver-manager==4.0.2
+# REMOVED: Selenium stuff (not needed for simple approach)
+# selenium==4.27.1
+# undetected-chromedriver==3.5.5
+# webdriver-manager==4.0.2
 
 # Development & Testing
 pytest==8.3.4
 pytest-asyncio==0.24.0
 httpx==0.28.1
-python-jose[cryptography]
