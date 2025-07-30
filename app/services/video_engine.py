@@ -203,3 +203,57 @@ def _extract_text_for_timeframe(words_data: List[Dict], start_time: float, end_t
         if start_time <= word.get('start', 0) <= end_time
     ]
     return ' '.join(relevant_words).strip()
+def generate_clip_thumbnail(video_path: str, timestamp: float, output_path: str) -> bool:
+    """Generate a thumbnail from video at specific timestamp"""
+    try:
+        cmd = [
+            'ffmpeg', '-i', video_path,
+            '-ss', str(timestamp),
+            '-vframes', '1',
+            '-q:v', '2',
+            '-y', output_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result.returncode == 0
+    except Exception as e:
+        print(f"Thumbnail generation failed: {e}")
+        return False
+
+def process_single_clip_with_preview(
+    source_video_path: str,
+    moment: Dict[str, float],
+    flags: Dict[str, Any],
+    user_id: int,
+    clip_number: str,
+    words_data: List[Dict]
+) -> Dict[str, Any]:
+    """Enhanced clip processor that also generates preview thumbnail"""
+    
+    # First, generate thumbnail
+    thumbnail_path = os.path.join(settings.STATIC_GENERATED_DIR, f"thumb_{user_id}_{clip_number}.jpg")
+    thumbnail_generated = generate_clip_thumbnail(
+        source_video_path, 
+        moment['start'] + 2,  # 2 seconds into the clip for better thumbnail
+        thumbnail_path
+    )
+    
+    # Process the video clip
+    result = process_single_clip(source_video_path, moment, flags, user_id, clip_number, words_data)
+    
+    if result['success'] and thumbnail_generated:
+        # Upload thumbnail
+        thumbnail_url = firebase_utils.upload_to_storage(
+            thumbnail_path,
+            f"thumbnails/clips/thumb_{user_id}_{clip_number}.jpg"
+        )
+        if thumbnail_url:
+            result['thumbnail_url'] = thumbnail_url
+            # Clean up local thumbnail
+            try:
+                os.remove(thumbnail_path)
+            except:
+                pass
+        else:
+            result['thumbnail_url'] = f"/static/generated/thumb_{user_id}_{clip_number}.jpg"
+    
+    return result
