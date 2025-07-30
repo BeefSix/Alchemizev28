@@ -33,11 +33,11 @@ transformers==4.44.2
 accelerate==1.8.1
 torch==2.7.1
 torchvision==0.22.1
-ollama==0.2.7
+
 
 # Media & Document Processing - USE WORKING VERSION
 yt-dlp==2024.12.13
-Pillow==11.0.0
+Pillow
 gTTS==2.5.4
 PyMuPDF==1.25.2
 python-docx==1.1.2
@@ -51,3 +51,4 @@ python-docx==1.1.2
 pytest==8.3.4
 pytest-asyncio==0.24.0
 httpx==0.28.1
+python-jose[cryptography]

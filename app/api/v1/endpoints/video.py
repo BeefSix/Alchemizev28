@@ -1,5 +1,6 @@
 # app/api/v1/endpoints/video.py
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTask # <--- FIX IS HERE
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from starlette.background import BackgroundTask # <--- THIS IS THE CORRECTED IMPORT
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.db import crud, models
@@ -172,5 +173,5 @@ async def download_all_clips(
         path=zip_path,
         media_type='application/zip',
         filename=f"alchemize_clips_{job_id[:8]}.zip",
-        background=BackgroundTask(lambda: shutil.rmtree(temp_dir))
+        background=BackgroundTask(shutil.rmtree, temp_dir)
     )

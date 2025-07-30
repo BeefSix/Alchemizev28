@@ -74,3 +74,18 @@ class TranscriptCache(Base):
     source_url = Column(String, primary_key=True)
     transcript_json = Column(Text, nullable=False) # JSON string
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
+
+# --- Add these Pydantic Models ---
+
+class JobResponse(BaseModel):
+    job_id: str
+    message: str
+
+class JobStatusResponse(BaseModel):
+    id: str
+    status: str
+    progress_details: Optional[Dict[str, Any]] = None
+    results: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
