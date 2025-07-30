@@ -1,118 +1,119 @@
 # app/workers/tasks.py
+
 import asyncio
+import subprocess
+import os
+import json
+import time
+
 from app.celery_app import celery_app
 from app.db import crud
 from app.db.base import get_db
 from app.services import video_engine, utils
-import json
-import os
-import time
 from pydub import AudioSegment
 
-# --- NEW HELPER FUNCTION FOR PROGRESS UPDATES ---
-async def run_with_progress_updates(db, job_id, start_percent, end_percent, total_duration, task_coroutine, description):
-    """
-    Runs a long task and provides smooth, estimated progress updates while it's running.
-    """
-    update_interval = 5 # seconds
-    
-    # Estimate the task duration (e.g., transcription is ~1/10th of audio duration)
-    # This is a key business logic assumption we can refine over time.
-    estimated_task_duration = total_duration / 10 
-    
-    num_updates = int(estimated_task_duration / update_interval)
-    percent_per_update = (end_percent - start_percent) / num_updates if num_updates > 0 else 0
+#================================================================================#
+# == NEW & CORRECTED VIDEO UPLOAD TASK ==                                        #
+# This replaces the old YouTube URL logic and fixes your core feature.           #
+#================================================================================#
 
-    async def update_progress():
-        for i in range(num_updates):
-            await asyncio.sleep(update_interval)
-            current_percent = start_percent + int(percent_per_update * i)
-            # Format the description to show estimated time
-            time_remaining = int(estimated_task_duration - (i * update_interval))
-            eta_description = f"{description} (est. {time_remaining}s left)"
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": eta_description, "percentage": current_percent})
-
-    progress_task = asyncio.create_task(update_progress())
-    
-    # Run the actual long-running task (e.g., transcription)
-    result = await task_coroutine
-
-    progress_task.cancel() # Stop the progress updates once the real task is done
-    return result
-
-# --- UPDATED VIDEO CLIP JOB ---
 @celery_app.task(bind=True)
-def run_videoclip_job(self, job_id: str, user_id: int, video_url: str, add_captions: bool, aspect_ratio: str):
-    """Synchronous Celery task wrapper."""
+def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio: str, platforms: list[str]):
+    """
+    Celery task to process an uploaded video file. This is the new core of your application.
+    """
+    # This runs the main async function and waits for it to complete.
     asyncio.run(
-        _async_videoclip_job(job_id, user_id, video_url, add_captions, aspect_ratio)
+        _async_videoclip_upload_job(job_id, user_id, video_path, add_captions, aspect_ratio, platforms)
     )
 
-async def _async_videoclip_job(job_id: str, user_id: int, video_url: str, add_captions: bool, aspect_ratio: str):
+async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio: str, platforms: list[str]):
+    """
+    The main asynchronous logic for processing an uploaded video.
+    """
     db = next(get_db())
-    source_video_path = None
+    audio_path = None
+    
     try:
-        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Validating video...", "percentage": 5})
-        can_validate, result = utils.validate_video_request(video_url)
-        if not can_validate: raise ValueError(f"Video validation failed: {result}")
+        # 1. Update Status & Extract Audio using FFmpeg
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Extracting audio from video...", "percentage": 10})
         
-        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Downloading...", "percentage": 10})
-        video_path_info = utils.download_media(video_url, is_video=True)
-        if not video_path_info['success']: raise ValueError(f"Video download failed: {video_path_info['error']}")
-        source_video_path = video_path_info['path']
+        audio_path = video_path.rsplit('.', 1)[0] + '.mp3'
+        command = ['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', '-y', audio_path]
+        subprocess.run(command, check=True, capture_output=True, text=True) # Use capture_output to hide ffmpeg logs
         
-        # --- SMART PROGRESS BAR IMPLEMENTATION ---
-        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Preparing transcription...", "percentage": 20})
-        audio_info = utils.download_media(video_url, is_video=False) # Get audio for duration
-        if not audio_info['success']: raise ValueError("Failed to get audio for duration estimate.")
-        audio_duration = AudioSegment.from_mp3(audio_info['path']).duration_seconds
-        
-        # Define the transcription task as a coroutine
-        transcription_coroutine = utils.get_or_create_transcript(video_url, user_id, job_id)
-        
-        # Run transcription with our new progress update helper
-        transcript_result = await run_with_progress_updates(
-            db, job_id, 
-            start_percent=20, end_percent=40, 
-            total_duration=audio_duration, 
-            task_coroutine=transcription_coroutine,
-            description="Transcribing..."
-        )
-        # --- END SMART PROGRESS BAR IMPLEMENTATION ---
-        
-        if not transcript_result['success']: raise ValueError(f"Transcription failed: {transcript_result['error']}")
-        full_words_data, audio_file_path = transcript_result['data']['words'], transcript_result['audio_file']
-        
-        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Finding viral moments...", "percentage": 40})
-        speech_segments = utils.detect_silence_and_chunk(audio_file_path)
-        if not speech_segments: raise ValueError("Could not detect any speech segments.")
-        
-        text_chunks = [' '.join(w['word'] for w in full_words_data if w['start'] >= s['start'] and w['end'] <= s['end']) for s in speech_segments]
-        viral_indices = analyze_content_chunks(text_chunks, user_id)
-        if not viral_indices: raise ValueError("AI analysis found no high-scoring moments.")
-        
-        moments = [{'start': speech_segments[i]['start'], 'duration': speech_segments[i]['end'] - speech_segments[i]['start']} for i in viral_indices]
-        urls = []
-        flags = {"add_captions": add_captions, "aspect_ratio": aspect_ratio, "add_music": True}
-        
-        for i, moment in enumerate(moments):
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Rendering clip {i+1}/{len(moments)}...", "percentage": 40+int(((i+1)/len(moments))*55)})
-            clip_result = video_engine.process_single_clip(source_video_path, moment, flags, user_id, i+1, full_words_data)
-            if not clip_result['success']: raise Exception(f"Failed to process clip {i+1}: {clip_result['error']}")
-            urls.append(clip_result['url'])
-            
-        crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Clips generated!", "percentage": 100}, results={"clip_urls": urls})
-    except Exception as e:
-        crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Video clipping job failed: {str(e)}")
-    finally:
-        patterns = [f"temp_*{job_id}*.*", f"final_clip_*{job_id}*.*"]
-        if source_video_path and os.path.exists(source_video_path): patterns.append(os.path.basename(source_video_path))
-        utils.cleanup_temp_files(patterns=patterns)
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError("FFmpeg failed to create the audio file. Check FFmpeg installation and file paths.")
 
-# (The other tasks remain the same as the last version)
+        # 2. Transcribe Audio (Requires your new utility function)
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Transcribing audio (this can take a moment)...", "percentage": 25})
+        
+        # This will call your Whisper logic on the extracted local audio file.
+        # You need to ensure utils.transcribe_local_audio_file is implemented.
+        transcript_result = await utils.transcribe_local_audio_file(audio_path, user_id, job_id)
+        if not transcript_result or not transcript_result.get('success'):
+            raise ValueError(f"Transcription failed: {transcript_result.get('error', 'Unknown error')}")
+        full_words_data = transcript_result['data']['words']
+
+        # 3. Find Viral Moments (Your secret sauce)
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Analyzing content for viral moments...", "percentage": 60})
+        speech_segments = utils.detect_silence_and_chunk(audio_path)
+        text_chunks = [' '.join(w['word'] for w in full_words_data if w['start'] >= s['start'] and w['end'] <= s['end']) for s in speech_segments]
+        
+        viral_indices = utils.analyze_content_chunks(text_chunks, user_id)
+        if not viral_indices:
+            raise ValueError("AI analysis did not find any high-potential video clips.")
+
+        # 4. Generate Clips for Each Platform
+        moments = [{'start': speech_segments[i]['start'], 'duration': speech_segments[i]['end'] - speech_segments[i]['start']} for i in viral_indices]
+        clips_by_platform = {p: [] for p in platforms}
+        flags = {"add_captions": add_captions, "add_music": True}
+
+        for i, moment in enumerate(moments):
+            progress = 60 + int(((i + 1) / len(moments)) * 35)
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Rendering clip {i+1} of {len(moments)}...", "percentage": progress})
+            
+            for platform in platforms:
+                platform_aspect_ratio = "9:16" # Default for TikTok/Shorts/Reels
+                if platform in ["linkedin", "twitter"]:
+                    platform_aspect_ratio = "1:1"
+                
+                flags["aspect_ratio"] = platform_aspect_ratio
+                unique_clip_id = f"{job_id}_{i+1}_{platform}"
+                
+                clip_result = video_engine.process_single_clip(video_path, moment, flags, user_id, unique_clip_id, full_words_data)
+                if clip_result.get('success'):
+                    clips_by_platform[platform].append(clip_result['url'])
+
+        # 5. Finalize Job
+        crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "All clips generated!", "percentage": 100}, results={"clips_by_platform": clips_by_platform})
+
+    except Exception as e:
+        # Detailed error logging for you to debug
+        import traceback
+        error_message = f"Job failed: {str(e)}"
+        print(f"ERROR for job {job_id}: {error_message}\n{traceback.format_exc()}")
+        crud.update_job_full_status(db, job_id, "FAILED", error_message=error_message)
+
+    finally:
+        # Clean up the temp audio file
+        if audio_path and os.path.exists(audio_path):
+            os.remove(audio_path)
+        # To save space, you can also delete the original large video upload.
+        # Be sure this is what you want before enabling it.
+        # if video_path and os.path.exists(video_path):
+        #     os.remove(video_path)
+
+
+#================================================================================#
+# == YOUR OTHER EXISTING TASKS ==                                                #
+# These are preserved to ensure other app features continue to work.             #
+#================================================================================#
+
 @celery_app.task(bind=True)
 def run_content_repurpose_job(self, job_id: str, user_id: int, content_input: str, platforms: list[str]):
     asyncio.run(_async_content_repurpose_job(job_id, user_id, content_input, platforms))
+
 async def _async_content_repurpose_job(job_id: str, user_id: int, content_input: str, platforms: list[str]):
     db = next(get_db())
     try:
@@ -136,6 +137,7 @@ async def _async_content_repurpose_job(job_id: str, user_id: int, content_input:
         crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Content suite generated!", "percentage": 100}, results=results)
     except Exception as e:
         crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Content repurposing failed: {str(e)}")
+
 
 @celery_app.task(bind=True)
 def generate_thumbnail_job(self, job_id: str, user_id: int, prompt_text: str):
@@ -164,19 +166,3 @@ def generate_thumbnail_job(self, job_id: str, user_id: int, prompt_text: str):
         crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Thumbnails ready!", "percentage": 100}, results={"thumbnail_urls": urls})
     except Exception as e:
         crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Thumbnail generation failed: {str(e)}")
-
-def analyze_content_chunks(text_chunks, user_id):
-    scores = []
-    for i, chunk in enumerate(text_chunks):
-        if len(chunk.strip()) < 80: scores.append({'index': i, 'score': 0}); continue
-        prompt = f'On a scale of 1-10, how engaging is this text for a short video clip? Answer with a single integer.\nTEXT: "{chunk}"'
-        score = 0
-        for _ in range(2):
-            response = utils.run_ai_generation(prompt, user_id, "gpt-4o-mini", 10, 0.2)
-            score = utils._parse_score_from_response(response)
-            if score > 0: break
-        scores.append({'index': i, 'score': score})
-    sorted_chunks = sorted(scores, key=lambda x: x['score'], reverse=True)
-    indices = [c['index'] for c in sorted_chunks if c['score'] >= 5]
-    if not indices and sorted_chunks: indices = [c['index'] for c in sorted_chunks[:2]]
-    return indices[:3]
