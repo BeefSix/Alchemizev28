@@ -12,9 +12,10 @@ FROM python:3.10-slim AS final
 
 WORKDIR /app
 
-# FIXED: Install Chrome and dependencies properly
+# =================== FIX START ===================
+# Install system dependencies, but REMOVE the basic ffmpeg from this line
 RUN apt-get update && apt-get install -y \
-    libpq5 ffmpeg curl wget gnupg unzip ca-certificates apt-transport-https jq \
+    libpq5 curl wget gnupg unzip ca-certificates apt-transport-https jq \
     fonts-dejavu-core fonts-liberation xvfb \
     # Chrome dependencies
     libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 libxdamage1 libxrandr2 \
@@ -25,7 +26,15 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y google-chrome-stable \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# FIXED: Verify Chrome installation and create symlink
+# Install a full-featured, static build of FFmpeg
+RUN wget https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz && \
+    tar -xf ffmpeg-git-amd64-static.tar.xz && \
+    mv ffmpeg-git-*/ffmpeg /usr/local/bin/ && \
+    mv ffmpeg-git-*/ffprobe /usr/local/bin/ && \
+    rm -rf ffmpeg-git-*
+# =================== FIX END ===================
+
+# Verify Chrome installation and create symlink
 RUN google-chrome --version
 RUN ln -sf /usr/bin/google-chrome /usr/bin/google-chrome-stable
 
@@ -36,8 +45,6 @@ RUN mkdir -p /app/.cache/selenium && chown -R appuser:appuser /app/.cache/seleni
 RUN mkdir -p /app/uploads && chown -R appuser:appuser /app/uploads
 RUN mkdir -p /app/static/generated && chown -R appuser:appuser /app/static/generated
 RUN mkdir -p /home/appuser/.local/share/undetected_chromedriver && chown -R appuser:appuser /home/appuser/.local/share/undetected_chromedriver
-
-# FIXED: Create Chrome user data directories with proper permissions
 RUN mkdir -p /tmp/chrome-user-data && chown -R appuser:appuser /tmp/chrome-user-data
 RUN mkdir -p /tmp/chrome-data && chown -R appuser:appuser /tmp/chrome-data
 
@@ -60,11 +67,10 @@ FROM final AS web
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM final AS worker
-# FIXED: Start Xvfb for headless Chrome
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1024x768x24 & celery -A app.workers.tasks worker --loglevel=info"]
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1024x768x24 & celery -A app.celery_app.celery_app worker --loglevel=info"]
 
 FROM final AS beat
-CMD ["celery", "-A", "app.workers.tasks", "beat", "--loglevel=info"]
+CMD ["celery", "-A", "app.celery_app.celery_app", "beat", "--loglevel=info"]
 
 FROM final AS frontend
 ENV STREAMLIT_SERVER_HEADLESS=true

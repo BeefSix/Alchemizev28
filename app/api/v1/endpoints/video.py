@@ -1,6 +1,6 @@
 # app/api/v1/endpoints/video.py
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
-from starlette.background import BackgroundTask # <--- THIS IS THE CORRECTED IMPORT
+from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.db import crud, models
@@ -41,24 +41,34 @@ async def create_videoclip_job_upload(
     upload_dir = os.path.join(settings.STATIC_GENERATED_DIR, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     
-    file_path = os.path.join(upload_dir, f"{job_id}_{file.filename}")
+    # =================== FIX START ===================
+    # Sanitize the filename to avoid errors with special characters
+    _, extension = os.path.splitext(file.filename)
+    sanitized_filename = f"{job_id}{extension}"
+    file_path = os.path.join(upload_dir, sanitized_filename)
+    # =================== FIX END ===================
+    
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
     platform_list = [p.strip() for p in platforms.split(",")]
     
-    crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="videoclip")
+    # Store the original filename in the job details for user reference
+    crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="videoclip", 
+                    progress_details={"original_filename": file.filename})
     
     tasks.run_videoclip_upload_job.delay(
         job_id=job_id,
         user_id=current_user.id,
-        video_path=file_path,
+        video_path=file_path, # Pass the new, clean file path
         add_captions=add_captions,
         aspect_ratio=aspect_ratio,
         platforms=platform_list
     )
     
     return {"job_id": job_id, "message": "Video processing has started. This may take a few minutes."}
+
+# (The rest of the file remains the same)
 
 @router.post("/batch-upload", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 async def create_batch_videoclip_jobs(
@@ -83,13 +93,18 @@ async def create_batch_videoclip_jobs(
             raise HTTPException(status_code=400, detail=f"Invalid file format for {file.filename}.")
 
         job_id = str(uuid.uuid4())
-        file_path = os.path.join(upload_dir, f"{job_id}_{file.filename}")
+        
+        # Sanitize the filename for batch jobs too
+        _, extension = os.path.splitext(file.filename)
+        sanitized_filename = f"{job_id}{extension}"
+        file_path = os.path.join(upload_dir, sanitized_filename)
         
         with open(file_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
         
-        crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="videoclip")
+        crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="videoclip",
+                        progress_details={"original_filename": file.filename})
         job_ids.append(job_id)
         
         tasks.run_videoclip_upload_job.delay(
