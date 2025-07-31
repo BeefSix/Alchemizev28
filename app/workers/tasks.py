@@ -30,9 +30,7 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
     )
 
 async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio: str, platforms: list[str]):
-    """
-    The main asynchronous logic for processing an uploaded video.
-    """
+    """The main asynchronous logic for processing an uploaded video."""
     db = next(get_db())
     audio_path = None
     
@@ -59,10 +57,7 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
             logger.error(error_details)
             raise ValueError(f"FFmpeg audio extraction failed.")
         
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError("FFmpeg completed but audio file was not created")
-        
-        logger.info(f"Audio extracted successfully: {audio_path} (size: {os.path.getsize(audio_path)} bytes)")
+        logger.info(f"Audio extracted successfully: {audio_path}")
 
         # 3. Transcribe Audio
         crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
@@ -73,9 +68,7 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
             raise ValueError(f"Transcription failed: {transcript_result.get('error', 'Unknown error')}")
         
         full_words_data = transcript_result['data']['words']
-        full_text = transcript_result['data']['text']
-        logger.info(f"Transcription complete. Text length: {len(full_text)} characters")
-
+        
         # 4. Find Viral Moments
         crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
             progress_details={"description": "Analyzing content for viral moments...", "percentage": 50})
@@ -86,7 +79,7 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
         
         # =================== FIX START ===================
         # We are already in an async function, so we must 'await' the async version directly.
-        viral_indices = await utils._async_analyze_content_chunks(text_chunks, user_id)
+        viral_indices = await utils.analyze_content_chunks(text_chunks, user_id)
         # =================== FIX END ===================
 
         if not viral_indices:
@@ -96,12 +89,7 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
         logger.info(f"Selected {len(viral_indices)} segments for clips: {viral_indices}")
 
         # 5. Generate Clips
-        moments = []
-        for idx in viral_indices:
-            if idx < len(speech_segments):
-                seg = speech_segments[idx]
-                duration = min(seg['end'] - seg['start'], 60) # Cap duration
-                moments.append({'start': seg['start'], 'duration': duration})
+        moments = [{'start': speech_segments[idx]['start'], 'duration': min(speech_segments[idx]['end'] - speech_segments[idx]['start'], 60)} for idx in viral_indices if idx < len(speech_segments)]
         
         clips_by_platform = {}
         total_clips_to_make = len(moments) * len(platforms)
@@ -113,7 +101,7 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
             
             for i, moment in enumerate(moments):
                 clips_made += 1
-                progress = 50 + int((clips_made / total_clips_to_make) * 45)
+                progress = 50 + int((clips_made / total_clips_to_make) * 45) if total_clips_to_make > 0 else 95
                 crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
                     progress_details={"description": f"Creating {platform} clip {i+1}/{len(moments)}...", "percentage": progress})
                 
@@ -126,7 +114,6 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
                     )
                     if clip_result.get('success'):
                         platform_clips.append(clip_result['url'])
-                        logger.info(f"Created clip for {platform}: {clip_result['url']}")
                 except Exception as e:
                     logger.error(f"Error creating clip for {platform}: {str(e)}")
             
@@ -140,7 +127,7 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
         crud.update_job_full_status(db, job_id, "COMPLETED", 
             progress_details={"description": "All clips generated successfully!", "percentage": 100}, 
             results={"clips_by_platform": clips_by_platform})
-        logger.info(f"Job completed successfully. Generated clips for {len(clips_by_platform)} platforms.")
+        logger.info(f"Job completed successfully.")
 
     except Exception as e:
         import traceback

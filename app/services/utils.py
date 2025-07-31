@@ -343,8 +343,8 @@ def analyze_content_chunks(text_chunks: list[str], user_id: int) -> list[int]:
     # This is now a synchronous wrapper around the async implementation
     return asyncio.run(_async_analyze_content_chunks(text_chunks, user_id))
 
-async def _async_analyze_content_chunks(text_chunks: list[str], user_id: int) -> list[int]:
-    """Asynchronously analyze chunks"""
+async def analyze_content_chunks(text_chunks: list[str], user_id: int) -> list[int]:
+    """Asynchronously analyze text chunks and return indices of the most viral ones"""
     tasks = []
     for i, chunk in enumerate(text_chunks):
         if len(chunk.strip().split()) < 10:
@@ -357,7 +357,7 @@ async def _async_analyze_content_chunks(text_chunks: list[str], user_id: int) ->
     high_scoring_indices = [s['index'] for s in scores if s['score'] >= 7]
     if not high_scoring_indices:
         sorted_scores = sorted(scores, key=lambda x: x['score'], reverse=True)
-        high_scoring_indices = [s['index'] for s in sorted_scores[:3]] # Fallback to top 3
+        high_scoring_indices = [s['index'] for s in sorted_scores[:3]]
     
     return high_scoring_indices[:5]
 
@@ -366,7 +366,7 @@ async def _get_chunk_score(prompt, user_id, index):
     match = re.search(r'\d+', response_str or "")
     score = int(match.group(0)) if match else 5
     return {"index": index, "score": score}
-
+# =================== FIX END ===================
 
 def local_ai_polish(content: str) -> str:
     """Placeholder for local AI polishing"""
