@@ -23,7 +23,7 @@ router = APIRouter()
 async def create_videoclip_job_upload(
     file: UploadFile = File(...),
     add_captions: bool = True,
-    aspect_ratio: str = "9:16",
+    aspect_ratio: str = "9:16",  # Accept aspect ratio parameter
     platforms: str = "youtube_shorts,tiktok,instagram_reels",
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
@@ -40,6 +40,31 @@ async def create_videoclip_job_upload(
     job_id = str(uuid.uuid4())
     upload_dir = os.path.join(settings.STATIC_GENERATED_DIR, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
+    
+    _, extension = os.path.splitext(file.filename)
+    sanitized_filename = f"{job_id}{extension}"
+    file_path = os.path.join(upload_dir, sanitized_filename)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    platform_list = [p.strip() for p in platforms.split(",")]
+    
+    # Store the original filename in the job details for user reference
+    crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="videoclip", 
+                    progress_details={"original_filename": file.filename})
+    
+    # Pass the aspect ratio to the worker
+    tasks.run_videoclip_upload_job.delay(
+        job_id=job_id,
+        user_id=current_user.id,
+        video_path=file_path,
+        add_captions=add_captions,
+        aspect_ratio=aspect_ratio,  # Pass the user's choice
+        platforms=platform_list
+    )
+    
+    return {"job_id": job_id, "message": "Video processing has started. This may take a few minutes."}
     
     # =================== FIX START ===================
     # Sanitize the filename to avoid errors with special characters

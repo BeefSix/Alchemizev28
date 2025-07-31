@@ -8,12 +8,53 @@ from app.workers import tasks # Assuming tasks.py is available
 import uuid
 import json # For parsing if content results are stored as JSON string
 
+@router.get("/jobs/{job_id}", response_model=models.JobStatusResponse)
+def get_content_job_status(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Get the status of a content generation job"""
+    job = crud.get_job(db, job_id=job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to view this job")
+    
+    # Parse the JSON fields
+    results = None
+    progress_details = None
+    
+    try:
+        if job.results:
+            results = json.loads(job.results) if isinstance(job.results, str) else job.results
+    except json.JSONDecodeError:
+        results = {"error": "Could not parse results"}
+        
+    try:
+        if job.progress_details:
+            progress_details = json.loads(job.progress_details) if isinstance(job.progress_details, str) else job.progress_details
+    except json.JSONDecodeError:
+        progress_details = {"error": "Could not parse progress details"}
+    
+    return {
+        "id": job.id,
+        "status": job.status,
+        "error_message": job.error_message,
+        "results": results,
+        "progress_details": progress_details
+    }
 router = APIRouter()
 
 # Example: Content Repurposing Endpoint (UNCOMMENTED)
 class RepurposeRequest(models.BaseModel):
-    content: str # This could be text or a URL
-    platforms: list[str] = ["LinkedIn", "Facebook", "Twitter", "Instagram"] # Add platforms selection
+    content: str
+    platforms: list[str] = ["LinkedIn", "Facebook", "Twitter", "Instagram"]
+    tone: str = "Professional"  # New field
+    style: str = "Concise"  # New field
+    additional_instructions: str = ""  # New field
+
+# Update the create_repurpose_job function to pass these new parameters
 
 @router.post("/repurpose", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 def create_repurpose_job(
@@ -24,15 +65,22 @@ def create_repurpose_job(
 ):
     """
     Accepts text or a URL and starts a background job to repurpose content.
+    Now includes tone, style, and additional instructions.
     """
     job_id = str(uuid.uuid4())
     crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="content")
+    
+    # Pass the new parameters to the Celery task
     tasks.run_content_repurpose_job.delay(
         job_id=job_id,
-        user_id=current_user.id, # Pass user_id as int
-        content_input=request.content, # Renamed from content_text to content_input
-        platforms=request.platforms
+        user_id=current_user.id,
+        content_input=request.content,
+        platforms=request.platforms,
+        tone=request.tone,
+        style=request.style,
+        additional_instructions=request.additional_instructions
     )
+    
     return {"job_id": job_id, "message": "Content repurposing job has been accepted and is processing."}
 
 
