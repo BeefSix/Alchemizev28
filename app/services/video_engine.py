@@ -93,16 +93,26 @@ def process_single_clip(
     moment: Dict[str, float],
     flags: Dict[str, Any],
     user_id: int,
-    clip_number: int,
+    clip_number: str,
     words_data: List[Dict]
 ) -> Dict[str, Any]:
-    """Process a single video clip with the given parameters"""
+    """Process a single video clip with better error handling"""
+    
+    temp_clip_path = None
+    final_clip_path = None
     
     try:
+        # Verify source video exists
+        if not os.path.exists(source_video_path):
+            return {'success': False, 'error': f'Source video not found: {source_video_path}'}
+        
         start_time = moment['start']
         duration = min(moment['duration'], 60)  # Cap at 60 seconds
         aspect_ratio = flags.get('aspect_ratio', '9:16')
         add_captions = flags.get('add_captions', True)
+        platform = flags.get('platform', 'unknown')
+        
+        print(f"Processing clip for {platform}: start={start_time}, duration={duration}, aspect={aspect_ratio}")
         
         # Generate unique filename
         clip_id = f"clip_{user_id}_{clip_number}_{uuid.uuid4().hex[:8]}"
@@ -111,90 +121,95 @@ def process_single_clip(
         
         os.makedirs(settings.STATIC_GENERATED_DIR, exist_ok=True)
         
-        # Step 1: Extract the base clip
+        # Step 1: Extract the base clip with more compatible settings
         extract_cmd = [
-            'ffmpeg', '-i', source_video_path,
-            '-ss', str(start_time),
-            '-t', str(duration),
-            '-c:v', 'libx264',
-            '-c:a', 'aac',
-            '-y', temp_clip_path
+            'ffmpeg',
+            '-ss', str(start_time),  # Seek to start time
+            '-i', source_video_path, # Input file
+            '-t', str(duration),     # Duration
+            '-c:v', 'libx264',       # Video codec
+            '-preset', 'fast',       # Encoding speed
+            '-crf', '23',            # Quality (lower = better, 23 is default)
+            '-c:a', 'aac',           # Audio codec
+            '-b:a', '128k',          # Audio bitrate
+            '-movflags', '+faststart', # Web optimization
+            '-y',                    # Overwrite
+            temp_clip_path
         ]
         
+        print(f"Extracting clip: {' '.join(extract_cmd)}")
         result = subprocess.run(extract_cmd, capture_output=True, text=True)
+        
         if result.returncode != 0:
-            raise Exception(f"Video extraction failed: {result.stderr}")
+            error_msg = f"Video extraction failed (code {result.returncode}): {result.stderr[:500]}"
+            print(error_msg)
+            return {'success': False, 'error': error_msg}
         
-        # Step 2: Apply aspect ratio and captions if requested
-        filter_complex = []
+        if not os.path.exists(temp_clip_path):
+            return {'success': False, 'error': 'Temp clip was not created'}
         
-        # Aspect ratio filter
+        # Step 2: Apply aspect ratio (simplified for now, skip captions)
+        filter_parts = []
+        
         if aspect_ratio == '9:16':
-            filter_complex.append("scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280")
+            # Vertical (TikTok, Shorts, Reels)
+            filter_parts.append("scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2")
         elif aspect_ratio == '1:1':
-            filter_complex.append("scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080")
-        
-        # Caption filter (simplified - you'd want to use the words_data for precise timing)
-        if add_captions:
-            # This is a placeholder - implement proper caption overlay based on words_data
-            caption_text = _extract_text_for_timeframe(words_data, start_time, start_time + duration)
-            if caption_text:
-                # Simple text overlay (you might want to make this more sophisticated)
-                caption_filter = f"drawtext=text='{caption_text[:50]}...':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=36:fontcolor=white:bordercolor=black:borderw=2:x=(w-text_w)/2:y=h-100"
-                filter_complex.append(caption_filter)
-        
-        # Final processing command
-        if filter_complex:
-            process_cmd = [
-                'ffmpeg', '-i', temp_clip_path,
-                '-vf', ','.join(filter_complex),
-                '-c:a', 'copy',
-                '-y', final_clip_path
-            ]
+            # Square (Instagram Feed)
+            filter_parts.append("scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2")
         else:
-            # Just copy if no filters
+            # 16:9 (LinkedIn, Twitter) - just copy
             os.rename(temp_clip_path, final_clip_path)
-            process_cmd = None
+            temp_clip_path = None
         
-        if process_cmd:
+        # Apply filters if needed
+        if filter_parts and temp_clip_path:
+            process_cmd = [
+                'ffmpeg',
+                '-i', temp_clip_path,
+                '-vf', ','.join(filter_parts),
+                '-c:a', 'copy',
+                '-y',
+                final_clip_path
+            ]
+            
+            print(f"Processing clip with filters: {' '.join(process_cmd[:6])}...")
             result = subprocess.run(process_cmd, capture_output=True, text=True)
+            
             if result.returncode != 0:
-                raise Exception(f"Video processing failed: {result.stderr}")
+                error_msg = f"Video processing failed (code {result.returncode}): {result.stderr[:500]}"
+                print(error_msg)
+                return {'success': False, 'error': error_msg}
         
-        # Step 3: Upload to Firebase or serve locally
-        firebase_url = firebase_utils.upload_to_storage(
-            final_clip_path,
-            f"clips/{clip_id}.mp4"
-        )
+        # Verify final clip exists
+        if not os.path.exists(final_clip_path):
+            return {'success': False, 'error': 'Final clip was not created'}
         
-        if firebase_url:
-            # Clean up local files
-            for path in [temp_clip_path, final_clip_path]:
-                try:
-                    if os.path.exists(path):
-                        os.remove(path)
-                except:
-                    pass
-            return {'success': True, 'url': firebase_url}
-        else:
-            # Return local static URL
-            # Clean up temp file
-            try:
-                if os.path.exists(temp_clip_path):
-                    os.remove(temp_clip_path)
-            except:
-                pass
-            return {'success': True, 'url': f"/static/generated/final_{clip_id}.mp4"}
+        # Step 3: Return local URL (skip Firebase for now to isolate issue)
+        local_url = f"/static/generated/{os.path.basename(final_clip_path)}"
+        print(f"Clip created successfully: {local_url}")
+        
+        # Clean up temp file
+        if temp_clip_path and os.path.exists(temp_clip_path):
+            os.remove(temp_clip_path)
+        
+        return {'success': True, 'url': local_url}
             
     except Exception as e:
+        error_msg = f"Unexpected error in process_single_clip: {str(e)}"
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+        
         # Clean up any temp files
         for path in [temp_clip_path, final_clip_path]:
-            try:
-                if os.path.exists(path):
+            if path and os.path.exists(path):
+                try:
                     os.remove(path)
-            except:
-                pass
-        return {'success': False, 'error': str(e)}
+                except:
+                    pass
+        
+        return {'success': False, 'error': error_msg}
 
 def _extract_text_for_timeframe(words_data: List[Dict], start_time: float, end_time: float) -> str:
     """Extract text from words data for a specific timeframe"""

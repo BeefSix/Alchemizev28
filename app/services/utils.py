@@ -240,21 +240,39 @@ async def get_or_create_transcript(source_url: str, user_id: int, job_id: str):
     return await transcribe_local_audio_file(audio_info['path'], user_id, job_id)
 
 def track_usage(model: str, user_id: int, operation: str, input_tokens: int = 0, output_tokens: int = 0, custom_cost: float = None):
-    db = next(get_db())
+    """Track usage with proper database connection handling"""
+    db = None
     try:
+        # Get a fresh database session
+        db = next(get_db())
+        
         cost = 0.0
         if custom_cost is not None:
             cost = custom_cost
         elif model in settings.TOKEN_PRICES:
             cost = ((input_tokens / 1_000_000) * settings.TOKEN_PRICES[model].get("input", 0)) + \
                    ((output_tokens / 1_000_000) * settings.TOKEN_PRICES[model].get("output", 0))
+        
         crud.track_usage(db, user_id, model, operation, cost)
+        db.commit()  # Explicitly commit
+        
     except Exception as e:
-        logger.error(f"Error in track_usage: {e}")
+        print(f"Error in track_usage: {e}")
+        if db:
+            db.rollback()
+    finally:
+        # CRITICAL: Always close the database connection
+        if db:
+            db.close()
+
+# Also fix the check_usage_limits function
 
 def check_usage_limits(user_id: int, operation_type: str = 'video'):
-    db = next(get_db())
+    """Check usage limits with proper database connection handling"""
+    db = None
     try:
+        db = next(get_db())
+        
         videos_today = crud.get_user_videos_today(db, user_id)
         daily_limit = settings.DAILY_LIMITS.get('videos_per_user', 10)
         
@@ -269,9 +287,13 @@ def check_usage_limits(user_id: int, operation_type: str = 'video'):
             return False, f"Daily cost limit reached (${daily_cost:.2f}/${cost_limit:.2f})."
         
         return True, ""
+        
     except Exception as e:
-        logger.error(f"Error checking usage limits: {e}")
+        print(f"Error checking usage limits: {e}")
         return True, ""
+    finally:
+        if db:
+            db.close()
 
 def cut_video_clip(video_file: str, start_time: float, duration: float, output_name: str):
     try:
@@ -341,7 +363,7 @@ async def run_ai_generation(prompt: str, user_id: int, model: str = "gpt-4o-mini
 def analyze_content_chunks(text_chunks: list[str], user_id: int) -> list[int]:
     """Analyze text chunks and return indices of the most viral/engaging ones"""
     # This is now a synchronous wrapper around the async implementation
-    return asyncio.run(_async_analyze_content_chunks(text_chunks, user_id))
+    return asyncio.run(analyze_content_chunks(text_chunks, user_id))
 
 async def analyze_content_chunks(text_chunks: list[str], user_id: int) -> list[int]:
     """Asynchronously analyze text chunks and return indices of the most viral ones"""
