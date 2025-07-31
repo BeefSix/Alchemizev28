@@ -35,74 +35,186 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
     audio_path = None
     
     try:
-        # 1. Update Status & Extract Audio using FFmpeg
-        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Extracting audio from video...", "percentage": 10})
+        # 1. First, verify the video file exists and get absolute path
+        if not os.path.isabs(video_path):
+            video_path = os.path.abspath(video_path)
         
-        audio_path = video_path.rsplit('.', 1)[0] + '.mp3'
-        command = ['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', '-y', audio_path]
-        subprocess.run(command, check=True, capture_output=True, text=True) # Use capture_output to hide ffmpeg logs
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+        
+        # Log file info for debugging
+        file_size = os.path.getsize(video_path)
+        print(f"Processing video: {video_path} (size: {file_size} bytes)")
+        
+        # Update status
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+            progress_details={"description": "Extracting audio from video...", "percentage": 10})
+        
+        # 2. Extract audio using FFmpeg with absolute paths
+        audio_path = video_path.rsplit('.', 1)[0] + '_audio.mp3'
+        
+        # More robust FFmpeg command with better error handling
+        command = [
+            'ffmpeg', 
+            '-i', video_path,
+            '-vn',  # No video
+            '-acodec', 'mp3',  # Audio codec
+            '-ab', '192k',  # Audio bitrate
+            '-ar', '44100',  # Audio sample rate
+            '-y',  # Overwrite output
+            audio_path
+        ]
+        
+        print(f"Running FFmpeg command: {' '.join(command)}")
+        
+        # Run with more detailed error capture
+        result = subprocess.run(command, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            error_details = f"FFmpeg failed with exit code {result.returncode}\nSTDERR: {result.stderr}\nSTDOUT: {result.stdout}"
+            print(error_details)
+            raise ValueError(f"FFmpeg audio extraction failed: {error_details}")
         
         if not os.path.exists(audio_path):
-            raise FileNotFoundError("FFmpeg failed to create the audio file. Check FFmpeg installation and file paths.")
-
-        # 2. Transcribe Audio (Requires your new utility function)
-        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Transcribing audio (this can take a moment)...", "percentage": 25})
+            raise FileNotFoundError("FFmpeg completed but audio file was not created")
         
-        # This will call your Whisper logic on the extracted local audio file.
-        # You need to ensure utils.transcribe_local_audio_file is implemented.
+        print(f"Audio extracted successfully: {audio_path} (size: {os.path.getsize(audio_path)} bytes)")
+
+        # 3. Transcribe Audio
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+            progress_details={"description": "Transcribing audio (this may take a few minutes)...", "percentage": 25})
+        
+        # Import the function from utils
+        from app.services import utils
+        
         transcript_result = await utils.transcribe_local_audio_file(audio_path, user_id, job_id)
         if not transcript_result or not transcript_result.get('success'):
             raise ValueError(f"Transcription failed: {transcript_result.get('error', 'Unknown error')}")
+        
         full_words_data = transcript_result['data']['words']
+        full_text = transcript_result['data']['text']
+        
+        print(f"Transcription complete. Text length: {len(full_text)} characters")
 
-        # 3. Find Viral Moments (Your secret sauce)
-        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Analyzing content for viral moments...", "percentage": 60})
+        # 4. Find Viral Moments
+        crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+            progress_details={"description": "Analyzing content for viral moments...", "percentage": 50})
+        
         speech_segments = utils.detect_silence_and_chunk(audio_path)
-        text_chunks = [' '.join(w['word'] for w in full_words_data if w['start'] >= s['start'] and w['end'] <= s['end']) for s in speech_segments]
+        
+        # Create text chunks based on speech segments
+        text_chunks = []
+        for seg in speech_segments:
+            words_in_segment = [
+                w['word'] for w in full_words_data 
+                if seg['start'] <= w.get('start', 0) <= seg['end']
+            ]
+            text_chunks.append(' '.join(words_in_segment))
+        
+        print(f"Found {len(speech_segments)} speech segments")
         
         viral_indices = utils.analyze_content_chunks(text_chunks, user_id)
         if not viral_indices:
-            raise ValueError("AI analysis did not find any high-potential video clips.")
+            # If no viral moments found, just take the first few segments
+            viral_indices = list(range(min(3, len(speech_segments))))
+            print("No high-scoring segments found, using first segments")
+        
+        print(f"Selected {len(viral_indices)} segments for clips: {viral_indices}")
 
-        # 4. Generate Clips for Each Platform
-        moments = [{'start': speech_segments[i]['start'], 'duration': speech_segments[i]['end'] - speech_segments[i]['start']} for i in viral_indices]
-        clips_by_platform = {p: [] for p in platforms}
-        flags = {"add_captions": add_captions, "add_music": True}
-
-        for i, moment in enumerate(moments):
-            progress = 60 + int(((i + 1) / len(moments)) * 35)
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Rendering clip {i+1} of {len(moments)}...", "percentage": progress})
+        # 5. Generate Clips for Each Platform
+        moments = []
+        for idx in viral_indices:
+            if idx < len(speech_segments):
+                seg = speech_segments[idx]
+                duration = seg['end'] - seg['start']
+                # Cap duration at 60 seconds
+                if duration > 60:
+                    duration = 60
+                moments.append({
+                    'start': seg['start'],
+                    'duration': duration
+                })
+        
+        clips_by_platform = {}
+        total_clips = len(moments) * len(platforms)
+        current_clip = 0
+        
+        for platform in platforms:
+            platform_clips = []
             
-            for platform in platforms:
-                platform_aspect_ratio = "9:16" # Default for TikTok/Shorts/Reels
-                if platform in ["linkedin", "twitter"]:
-                    platform_aspect_ratio = "1:1"
+            # Platform-specific configurations
+            if platform in ["youtube_shorts", "tiktok", "instagram_reels"]:
+                platform_aspect_ratio = "9:16"
+            elif platform in ["instagram_feed"]:
+                platform_aspect_ratio = "1:1"
+            else:  # linkedin, twitter
+                platform_aspect_ratio = "16:9"
+            
+            for i, moment in enumerate(moments):
+                current_clip += 1
+                progress = 50 + int((current_clip / total_clips) * 45)
                 
-                flags["aspect_ratio"] = platform_aspect_ratio
-                unique_clip_id = f"{job_id}_{i+1}_{platform}"
+                crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                    progress_details={
+                        "description": f"Creating {platform} clip {i+1}/{len(moments)}...", 
+                        "percentage": progress
+                    })
                 
-                clip_result = video_engine.process_single_clip(video_path, moment, flags, user_id, unique_clip_id, full_words_data)
-                if clip_result.get('success'):
-                    clips_by_platform[platform].append(clip_result['url'])
+                clip_id = f"{job_id}_{platform}_{i+1}"
+                
+                try:
+                    clip_result = video_engine.process_single_clip(
+                        video_path,  # Already absolute path
+                        moment,
+                        {
+                            "add_captions": add_captions,
+                            "aspect_ratio": platform_aspect_ratio,
+                            "platform": platform
+                        },
+                        user_id,
+                        clip_id,
+                        full_words_data
+                    )
+                    
+                    if clip_result.get('success'):
+                        platform_clips.append(clip_result['url'])
+                        print(f"Created clip for {platform}: {clip_result['url']}")
+                    else:
+                        print(f"Failed to create clip for {platform}: {clip_result.get('error')}")
+                        
+                except Exception as e:
+                    print(f"Error creating clip for {platform}: {str(e)}")
+            
+            if platform_clips:
+                clips_by_platform[platform] = platform_clips
 
-        # 5. Finalize Job
-        crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "All clips generated!", "percentage": 100}, results={"clips_by_platform": clips_by_platform})
+        # 6. Complete the job
+        if clips_by_platform:
+            crud.update_job_full_status(db, job_id, "COMPLETED", 
+                progress_details={"description": "All clips generated successfully!", "percentage": 100}, 
+                results={
+                    "clips_by_platform": clips_by_platform,
+                    "total_clips": sum(len(clips) for clips in clips_by_platform.values())
+                })
+            print(f"Job completed successfully. Generated {sum(len(clips) for clips in clips_by_platform.values())} clips")
+        else:
+            raise ValueError("No clips were successfully generated")
 
     except Exception as e:
-        # Detailed error logging for you to debug
         import traceback
         error_message = f"Job failed: {str(e)}"
-        print(f"ERROR for job {job_id}: {error_message}\n{traceback.format_exc()}")
+        error_traceback = traceback.format_exc()
+        print(f"ERROR for job {job_id}: {error_message}\n{error_traceback}")
         crud.update_job_full_status(db, job_id, "FAILED", error_message=error_message)
 
     finally:
-        # Clean up the temp audio file
-        if audio_path and os.path.exists(audio_path):
-            os.remove(audio_path)
-        # To save space, you can also delete the original large video upload.
-        # Be sure this is what you want before enabling it.
-        # if video_path and os.path.exists(video_path):
-        #     os.remove(video_path)
+        # Cleanup temporary files
+        try:
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+                print(f"Cleaned up audio file: {audio_path}")
+        except Exception as e:
+            print(f"Error cleaning up audio file: {e}")
 
 
 #================================================================================#

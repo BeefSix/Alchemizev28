@@ -300,3 +300,187 @@ def detect_silence_and_chunk(audio_path: str):
     except Exception as e:
         print(f"Error during silence detection: {e}")
         return [{'start': 0, 'end': 15.0}]
+    
+    # Move the async function to top-level (not nested inside another function)
+    async def transcribe_local_audio_file(audio_file_path: str, user_id: int, job_id: str):
+        """
+        Transcribe a local audio file (not from YouTube).
+        This is what your upload feature needs!
+        """
+        if not client:
+            return {"success": False, "error": "OpenAI client not initialized."}
+        
+        if not os.path.exists(audio_file_path):
+            return {"success": False, "error": f"Audio file not found: {audio_file_path}"}
+        
+        try:
+            # For large files, we need to chunk them
+            audio = AudioSegment.from_file(audio_file_path)
+            duration_seconds = len(audio) / 1000.0
+            
+            # If file is small enough (< 25MB or ~15 minutes), transcribe directly
+            if duration_seconds < 900:  # 15 minutes
+                with open(audio_file_path, 'rb') as f:
+                    transcript_result = client.audio.transcriptions.create(
+                        model="whisper-1", 
+                        file=f, 
+                        response_format="verbose_json", 
+                        timestamp_granularities=["word"]
+                    )
+                
+                word_list_dicts = [word.model_dump() for word in transcript_result.words] if hasattr(transcript_result, 'words') else []
+                
+                # Track usage
+                cost = (duration_seconds / 60) * settings.TOKEN_PRICES.get("whisper-1", {}).get("output", 0.006)
+                track_usage("whisper-1", user_id, 'transcription', custom_cost=cost)
+                
+                return {
+                    "success": True, 
+                    "data": {
+                        "text": transcript_result.text, 
+                        "words": word_list_dicts
+                    }
+                }
+            
+            # For larger files, chunk them
+            chunk_length_ms = 15 * 60 * 1000  # 15 minutes
+            chunks = [audio[i:i + chunk_length_ms] for i in range(0, len(audio), chunk_length_ms)]
+            
+            all_words = []
+            full_text = ""
+            total_cost = 0.0
+            
+            for i, chunk in enumerate(chunks):
+                chunk_path = os.path.join(TEMP_DOWNLOAD_DIR, f"chunk_{job_id}_{i}.mp3")
+                chunk.export(chunk_path, format="mp3")
+                
+                try:
+                    with open(chunk_path, 'rb') as f:
+                        transcript_result = client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=f,
+                            response_format="verbose_json",
+                            timestamp_granularities=["word"]
+                        )
+                    
+                    # Adjust timestamps for chunk offset
+                    offset = i * (chunk_length_ms / 1000)
+                    words = transcript_result.words if hasattr(transcript_result, 'words') else []
+                    
+                    for word in words:
+                        word_dict = word.model_dump()
+                        word_dict['start'] += offset
+                        word_dict['end'] += offset
+                        all_words.append(word_dict)
+                    
+                    full_text += transcript_result.text + " "
+                    
+                    # Calculate cost
+                    chunk_duration = len(chunk) / 1000.0
+                    chunk_cost = (chunk_duration / 60) * settings.TOKEN_PRICES.get("whisper-1", {}).get("output", 0.006)
+                    total_cost += chunk_cost
+                    
+                finally:
+                    if os.path.exists(chunk_path):
+                        os.remove(chunk_path)
+            
+            # Track total usage
+            track_usage("whisper-1", user_id, 'transcription', custom_cost=total_cost)
+            
+            return {
+                "success": True,
+                "data": {
+                    "text": full_text.strip(),
+                    "words": all_words
+                }
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": f"Transcription failed: {str(e)}"}
+
+# Also add this helper function if not already present
+def run_ai_generation(prompt: str, user_id: int, model: str = "gpt-4o-mini", max_tokens: int = 2000, temperature: float = 0.5, expect_json: bool = False):
+    """Run AI generation with the specified model"""
+    if not client:
+        return None
+    
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        
+        result = response.choices[0].message.content
+        
+        if expect_json:
+            try:
+                json.loads(result)
+            except json.JSONDecodeError:
+                return None
+        
+        # Track usage (simplified - you may want to count actual tokens)
+        track_usage(model, user_id, "generation", input_tokens=len(prompt.split()), output_tokens=len(result.split()))
+        
+        return result
+        
+    except Exception as e:
+        print(f"AI generation error: {e}")
+        return None
+
+# Add these missing helper functions too
+def analyze_content_chunks(text_chunks: list[str], user_id: int) -> list[int]:
+    """Analyze text chunks and return indices of the most viral/engaging ones"""
+    scores = []
+    
+    for i, chunk in enumerate(text_chunks):
+        if len(chunk.strip()) < 50:  # Skip very short chunks
+            scores.append(0)
+            continue
+        
+        prompt = f"""Rate this content from 1-10 for viral potential on social media.
+Consider: Hook strength, emotional impact, shareability, and completeness.
+Reply with ONLY a number 1-10.
+
+Content: "{chunk[:500]}..."
+"""
+        
+        response = run_ai_generation(prompt, user_id, model="gpt-4o-mini", max_tokens=10, temperature=0.3)
+        
+        try:
+            score = int(response.strip())
+            scores.append(score)
+        except:
+            scores.append(5)  # Default middle score
+    
+    # Get indices of top scoring chunks (score >= 7)
+    good_indices = [i for i, score in enumerate(scores) if score >= 7]
+    
+    # If no high scorers, take top 3
+    if not good_indices:
+        sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+        good_indices = sorted_indices[:3]
+    
+    return good_indices[:5]  # Maximum 5 clips
+
+def local_ai_polish(content: str) -> str:
+    """Polish content locally (placeholder - implement if you have local AI)"""
+    # For now, just return the content as-is
+    # You could integrate Ollama here if needed
+    return content
+
+async def _ingest_text_or_article_sync(content_input: str, user_id: int) -> dict:
+    """Ingest text or article content"""
+    try:
+        if is_valid_url(content_input):
+            # It's a URL - scrape it
+            content = scrape_url(content_input)
+            if content.startswith("Error:"):
+                return {"success": False, "error": content}
+            return {"success": True, "content": content}
+        else:
+            # It's raw text
+            return {"success": True, "content": content_input}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

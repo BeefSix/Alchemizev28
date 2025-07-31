@@ -12,43 +12,31 @@ FROM python:3.10-slim AS final
 
 WORKDIR /app
 
-# =================== FINAL FIX ===================
-# Install dependencies, ADDING xz-utils and REMOVING ffmpeg
+# Install all dependencies including FFmpeg from official repos
 RUN apt-get update && apt-get install -y \
-    libpq5 curl wget gnupg unzip ca-certificates apt-transport-https jq xz-utils \
+    libpq5 curl wget gnupg unzip ca-certificates apt-transport-https jq \
     fonts-dejavu-core fonts-liberation xvfb \
+    # FFmpeg with all codecs
+    ffmpeg \
     # Chrome dependencies
     libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 libxdamage1 libxrandr2 \
     libgbm1 libxss1 libgtkextra-dev libgconf2-dev \
-    && apt-get remove -y ffmpeg \
     && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Download, extract, and set permissions for the full-featured FFmpeg
-RUN wget https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz && \
-    tar -xf ffmpeg-git-amd64-static.tar.xz && \
-    mv ffmpeg-git-*/ffmpeg /usr/local/bin/ && \
-    mv ffmpeg-git-*/ffprobe /usr/local/bin/ && \
-    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
-    rm -rf ffmpeg-git-*
-# =================== END FIX ===================
-
-# Verify Chrome installation and create symlink
+# Verify installations
+RUN ffmpeg -version && ffprobe -version
 RUN google-chrome --version
-RUN ln -sf /usr/bin/google-chrome /usr/bin/google-chrome-stable
 
 # Create user and directories
 RUN adduser --system --group appuser
 RUN mkdir -p /app/.cache/huggingface && chown -R appuser:appuser /app/.cache/huggingface
-RUN mkdir -p /app/.cache/selenium && chown -R appuser:appuser /app/.cache/selenium
 RUN mkdir -p /app/uploads && chown -R appuser:appuser /app/uploads
-RUN mkdir -p /app/static/generated && chown -R appuser:appuser /app/static/generated
-RUN mkdir -p /home/appuser/.local/share/undetected_chromedriver && chown -R appuser:appuser /home/appuser/.local/share/undetected_chromedriver
-RUN mkdir -p /tmp/chrome-user-data && chown -R appuser:appuser /tmp/chrome-user-data
-RUN mkdir -p /tmp/chrome-data && chown -R appuser:appuser /tmp/chrome-data
+RUN mkdir -p /app/static/generated/uploads && chown -R appuser:appuser /app/static
+RUN mkdir -p /app/static/generated/temp_downloads && chown -R appuser:appuser /app/static
 
 COPY --from=builder /app/wheels /wheels
 COPY requirements.txt .
@@ -61,7 +49,6 @@ USER appuser
 # Set environment variables
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
 ENV HF_HOME=/app/.cache/huggingface
-ENV CHROME_BIN=/usr/bin/google-chrome-stable
 ENV DISPLAY=:99
 
 # --- Target Stages ---
