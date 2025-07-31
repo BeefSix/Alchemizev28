@@ -12,23 +12,32 @@ FROM python:3.10-slim AS final
 
 WORKDIR /app
 
-# Install all dependencies including FFmpeg from official repos
+# =================== FINAL FIX ===================
+# Install dependencies, ADDING xz-utils (for tar) and REMOVING the basic ffmpeg
 RUN apt-get update && apt-get install -y \
-    libpq5 curl wget gnupg unzip ca-certificates apt-transport-https jq \
+    libpq5 curl wget gnupg unzip ca-certificates apt-transport-https jq xz-utils \
     fonts-dejavu-core fonts-liberation xvfb \
-    # FFmpeg with all codecs
-    ffmpeg \
     # Chrome dependencies
     libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 libxdamage1 libxrandr2 \
     libgbm1 libxss1 libgtkextra-dev libgconf2-dev \
+    && apt-get remove -y ffmpeg \
     && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Download, extract, and set permissions for the full-featured, static build of FFmpeg
+RUN wget https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz && \
+    tar -xf ffmpeg-git-amd64-static.tar.xz && \
+    mv ffmpeg-git-*/ffmpeg /usr/local/bin/ && \
+    mv ffmpeg-git-*/ffprobe /usr/local/bin/ && \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
+    rm -rf ffmpeg-git-* ffmpeg-git-amd64-static.tar.xz
+# =================== END FIX ===================
+
 # Verify installations
-RUN ffmpeg -version && ffprobe -version
+RUN ffmpeg -version
 RUN google-chrome --version
 
 # Create user and directories

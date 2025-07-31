@@ -5,24 +5,26 @@ import subprocess
 import os
 import json
 import time
+import logging
 
 from app.celery_app import celery_app
 from app.db import crud
 from app.db.base import get_db
 from app.services import video_engine, utils
-from pydub import AudioSegment
+
+# Configure logging to see print statements in Docker
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 #================================================================================#
-# == NEW & CORRECTED VIDEO UPLOAD TASK ==                                        #
-# This replaces the old YouTube URL logic and fixes your core feature.           #
+# == VIDEO UPLOAD TASK ==                                                        #
 #================================================================================#
 
 @celery_app.task(bind=True)
 def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio: str, platforms: list[str]):
     """
-    Celery task to process an uploaded video file. This is the new core of your application.
+    Celery's synchronous entry point for the video clipping job.
     """
-    # This runs the main async function and waits for it to complete.
     asyncio.run(
         _async_videoclip_upload_job(job_id, user_id, video_path, add_captions, aspect_ratio, platforms)
     )
@@ -35,57 +37,36 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
     audio_path = None
     
     try:
-        # 1. First, verify the video file exists and get absolute path
+        # 1. Verify paths and update status
         if not os.path.isabs(video_path):
             video_path = os.path.abspath(video_path)
         
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
-        # Log file info for debugging
-        file_size = os.path.getsize(video_path)
-        print(f"Processing video: {video_path} (size: {file_size} bytes)")
-        
-        # Update status
+        logger.info(f"Processing video: {video_path} (size: {os.path.getsize(video_path)} bytes)")
         crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
             progress_details={"description": "Extracting audio from video...", "percentage": 10})
         
-        # 2. Extract audio using FFmpeg with absolute paths
+        # 2. Extract audio using FFmpeg
         audio_path = video_path.rsplit('.', 1)[0] + '_audio.mp3'
+        command = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'mp3', '-ab', '192k', '-ar', '44100', '-y', audio_path]
+        logger.info(f"Running FFmpeg command: {' '.join(command)}")
         
-        # More robust FFmpeg command with better error handling
-        command = [
-            'ffmpeg', 
-            '-i', video_path,
-            '-vn',  # No video
-            '-acodec', 'mp3',  # Audio codec
-            '-ab', '192k',  # Audio bitrate
-            '-ar', '44100',  # Audio sample rate
-            '-y',  # Overwrite output
-            audio_path
-        ]
-        
-        print(f"Running FFmpeg command: {' '.join(command)}")
-        
-        # Run with more detailed error capture
         result = subprocess.run(command, capture_output=True, text=True)
-        
         if result.returncode != 0:
-            error_details = f"FFmpeg failed with exit code {result.returncode}\nSTDERR: {result.stderr}\nSTDOUT: {result.stdout}"
-            print(error_details)
-            raise ValueError(f"FFmpeg audio extraction failed: {error_details}")
+            error_details = f"FFmpeg failed with exit code {result.returncode}\nSTDERR: {result.stderr}"
+            logger.error(error_details)
+            raise ValueError(f"FFmpeg audio extraction failed.")
         
         if not os.path.exists(audio_path):
             raise FileNotFoundError("FFmpeg completed but audio file was not created")
         
-        print(f"Audio extracted successfully: {audio_path} (size: {os.path.getsize(audio_path)} bytes)")
+        logger.info(f"Audio extracted successfully: {audio_path} (size: {os.path.getsize(audio_path)} bytes)")
 
         # 3. Transcribe Audio
         crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
             progress_details={"description": "Transcribing audio (this may take a few minutes)...", "percentage": 25})
-        
-        # Import the function from utils
-        from app.services import utils
         
         transcript_result = await utils.transcribe_local_audio_file(audio_path, user_id, job_id)
         if not transcript_result or not transcript_result.get('success'):
@@ -93,133 +74,90 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
         
         full_words_data = transcript_result['data']['words']
         full_text = transcript_result['data']['text']
-        
-        print(f"Transcription complete. Text length: {len(full_text)} characters")
+        logger.info(f"Transcription complete. Text length: {len(full_text)} characters")
 
         # 4. Find Viral Moments
         crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
             progress_details={"description": "Analyzing content for viral moments...", "percentage": 50})
         
         speech_segments = utils.detect_silence_and_chunk(audio_path)
+        text_chunks = [' '.join(w['word'] for w in full_words_data if seg['start'] <= w.get('start', 0) <= seg['end']) for seg in speech_segments]
+        logger.info(f"Found {len(speech_segments)} speech segments")
         
-        # Create text chunks based on speech segments
-        text_chunks = []
-        for seg in speech_segments:
-            words_in_segment = [
-                w['word'] for w in full_words_data 
-                if seg['start'] <= w.get('start', 0) <= seg['end']
-            ]
-            text_chunks.append(' '.join(words_in_segment))
-        
-        print(f"Found {len(speech_segments)} speech segments")
-        
-        viral_indices = utils.analyze_content_chunks(text_chunks, user_id)
-        if not viral_indices:
-            # If no viral moments found, just take the first few segments
-            viral_indices = list(range(min(3, len(speech_segments))))
-            print("No high-scoring segments found, using first segments")
-        
-        print(f"Selected {len(viral_indices)} segments for clips: {viral_indices}")
+        # =================== FIX START ===================
+        # We are already in an async function, so we must 'await' the async version directly.
+        viral_indices = await utils._async_analyze_content_chunks(text_chunks, user_id)
+        # =================== FIX END ===================
 
-        # 5. Generate Clips for Each Platform
+        if not viral_indices:
+            viral_indices = list(range(min(3, len(speech_segments)))) # Fallback
+            logger.info("No high-scoring segments found, using first segments as fallback")
+        
+        logger.info(f"Selected {len(viral_indices)} segments for clips: {viral_indices}")
+
+        # 5. Generate Clips
         moments = []
         for idx in viral_indices:
             if idx < len(speech_segments):
                 seg = speech_segments[idx]
-                duration = seg['end'] - seg['start']
-                # Cap duration at 60 seconds
-                if duration > 60:
-                    duration = 60
-                moments.append({
-                    'start': seg['start'],
-                    'duration': duration
-                })
+                duration = min(seg['end'] - seg['start'], 60) # Cap duration
+                moments.append({'start': seg['start'], 'duration': duration})
         
         clips_by_platform = {}
-        total_clips = len(moments) * len(platforms)
-        current_clip = 0
+        total_clips_to_make = len(moments) * len(platforms)
+        clips_made = 0
         
         for platform in platforms:
             platform_clips = []
-            
-            # Platform-specific configurations
-            if platform in ["youtube_shorts", "tiktok", "instagram_reels"]:
-                platform_aspect_ratio = "9:16"
-            elif platform in ["instagram_feed"]:
-                platform_aspect_ratio = "1:1"
-            else:  # linkedin, twitter
-                platform_aspect_ratio = "16:9"
+            platform_aspect_ratio = "9:16" if platform in ["youtube_shorts", "tiktok", "instagram_reels"] else "1:1"
             
             for i, moment in enumerate(moments):
-                current_clip += 1
-                progress = 50 + int((current_clip / total_clips) * 45)
-                
+                clips_made += 1
+                progress = 50 + int((clips_made / total_clips_to_make) * 45)
                 crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                    progress_details={
-                        "description": f"Creating {platform} clip {i+1}/{len(moments)}...", 
-                        "percentage": progress
-                    })
+                    progress_details={"description": f"Creating {platform} clip {i+1}/{len(moments)}...", "percentage": progress})
                 
                 clip_id = f"{job_id}_{platform}_{i+1}"
-                
                 try:
                     clip_result = video_engine.process_single_clip(
-                        video_path,  # Already absolute path
-                        moment,
-                        {
-                            "add_captions": add_captions,
-                            "aspect_ratio": platform_aspect_ratio,
-                            "platform": platform
-                        },
-                        user_id,
-                        clip_id,
-                        full_words_data
+                        video_path, moment, 
+                        {"add_captions": add_captions, "aspect_ratio": platform_aspect_ratio, "platform": platform},
+                        user_id, clip_id, full_words_data
                     )
-                    
                     if clip_result.get('success'):
                         platform_clips.append(clip_result['url'])
-                        print(f"Created clip for {platform}: {clip_result['url']}")
-                    else:
-                        print(f"Failed to create clip for {platform}: {clip_result.get('error')}")
-                        
+                        logger.info(f"Created clip for {platform}: {clip_result['url']}")
                 except Exception as e:
-                    print(f"Error creating clip for {platform}: {str(e)}")
+                    logger.error(f"Error creating clip for {platform}: {str(e)}")
             
             if platform_clips:
                 clips_by_platform[platform] = platform_clips
 
         # 6. Complete the job
-        if clips_by_platform:
-            crud.update_job_full_status(db, job_id, "COMPLETED", 
-                progress_details={"description": "All clips generated successfully!", "percentage": 100}, 
-                results={
-                    "clips_by_platform": clips_by_platform,
-                    "total_clips": sum(len(clips) for clips in clips_by_platform.values())
-                })
-            print(f"Job completed successfully. Generated {sum(len(clips) for clips in clips_by_platform.values())} clips")
-        else:
+        if not clips_by_platform:
             raise ValueError("No clips were successfully generated")
+
+        crud.update_job_full_status(db, job_id, "COMPLETED", 
+            progress_details={"description": "All clips generated successfully!", "percentage": 100}, 
+            results={"clips_by_platform": clips_by_platform})
+        logger.info(f"Job completed successfully. Generated clips for {len(clips_by_platform)} platforms.")
 
     except Exception as e:
         import traceback
         error_message = f"Job failed: {str(e)}"
-        error_traceback = traceback.format_exc()
-        print(f"ERROR for job {job_id}: {error_message}\n{error_traceback}")
+        logger.error(f"ERROR for job {job_id}: {error_message}\n{traceback.format_exc()}")
         crud.update_job_full_status(db, job_id, "FAILED", error_message=error_message)
 
     finally:
-        # Cleanup temporary files
-        try:
-            if audio_path and os.path.exists(audio_path):
+        if audio_path and os.path.exists(audio_path):
+            try:
                 os.remove(audio_path)
-                print(f"Cleaned up audio file: {audio_path}")
-        except Exception as e:
-            print(f"Error cleaning up audio file: {e}")
-
+                logger.info(f"Cleaned up audio file: {audio_path}")
+            except Exception as e:
+                logger.error(f"Error cleaning up audio file: {e}")
 
 #================================================================================#
-# == YOUR OTHER EXISTING TASKS ==                                                #
-# These are preserved to ensure other app features continue to work.             #
+# == YOUR OTHER EXISTING TASKS (PRESERVED) ==                                    #
 #================================================================================#
 
 @celery_app.task(bind=True)
@@ -235,14 +173,14 @@ async def _async_content_repurpose_job(job_id: str, user_id: int, content_input:
         content_to_process = ingestion_result['content']
         crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Analyzing content...", "percentage": 20})
         analysis_prompt = f"Analyze this content and extract key insights, tone, and audience.\n\nCONTENT:\n{content_to_process[:4000]}"
-        content_analysis = utils.run_ai_generation(analysis_prompt, user_id, model="gpt-4o")
+        content_analysis = await utils.run_ai_generation(analysis_prompt, user_id, model="gpt-4o")
         if not content_analysis: raise Exception("AI content analysis failed.")
         crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating posts...", "percentage": 60})
         generation_prompt = f"""
         You are an expert content strategist. Transform the source content into social media posts for: {', '.join(platforms)}.
         SOURCE CONTENT:\n{content_to_process[:12000]}
         """
-        drafts = utils.run_ai_generation(generation_prompt, user_id, model="gpt-4o")
+        drafts = await utils.run_ai_generation(generation_prompt, user_id, model="gpt-4o")
         if not drafts: raise Exception("AI content generation failed.")
         polished_drafts = utils.local_ai_polish(drafts)
         results = {"analysis": content_analysis, "posts": polished_drafts}
@@ -250,27 +188,32 @@ async def _async_content_repurpose_job(job_id: str, user_id: int, content_input:
     except Exception as e:
         crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Content repurposing failed: {str(e)}")
 
-
 @celery_app.task(bind=True)
 def generate_thumbnail_job(self, job_id: str, user_id: int, prompt_text: str):
+    asyncio.run(_async_generate_thumbnail_job(job_id, user_id, prompt_text))
+
+async def _async_generate_thumbnail_job(job_id: str, user_id: int, prompt_text: str):
     db = next(get_db())
     try:
         crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating prompts...", "percentage": 10})
         prompt_gen_prompt = f'Based on the content, generate 3 striking prompts for an AI image generator to create a thumbnail. Respond with ONLY a valid JSON list of strings.\nCONTENT: {prompt_text}'
         image_prompts = []
         for _ in range(3):
-            response_str = utils.run_ai_generation(prompt_gen_prompt, user_id, "gpt-4o-mini", 500, expect_json=True)
+            response_str = await utils.run_ai_generation(prompt_gen_prompt, user_id, "gpt-4o-mini", 500, expect_json=True)
             if response_str:
                 try:
                     prompts = json.loads(response_str)
-                    if isinstance(prompts, list) and prompts: image_prompts = prompts; break
-                except (json.JSONDecodeError, TypeError): pass
-            time.sleep(1)
+                    if isinstance(prompts, list) and prompts:
+                        image_prompts = prompts
+                        break
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            await asyncio.sleep(1)
         if not image_prompts: raise Exception("Failed to generate valid image prompts.")
         urls = []
         for i, prompt in enumerate(image_prompts):
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Generating thumbnail {i+1}/{len(image_prompts)}...", "percentage": 20+int(((i+1)/len(image_prompts))*75)})
-            url = video_engine.sd_generator.generate_image(prompt, 1280, 720)
+            url = video_engine.sd_generator.generate_image(prompt, 1280, 720) # Assuming this is synchronous
             if url:
                 urls.append(url)
                 utils.track_usage("stable-diffusion-local", user_id, 'thumbnail', custom_cost=0.0)
