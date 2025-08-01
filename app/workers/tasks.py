@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # (Your existing run_videoclip_upload_job and run_content_repurpose_job functions go here, unchanged)
 
 @celery_app.task(bind=True)
-def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio_default: str, platforms: list[str]):
+def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio: str, platforms: list[str]):
     """The main synchronous logic for processing an uploaded video."""
     audio_path = None
     try:
@@ -59,10 +59,12 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
                 elif platform in ["youtube_shorts", "tiktok", "instagram_reels"]:
                     aspect_ratio = "9:16"
                 else:
-                    aspect_ratio = aspect_ratio_default
+                    # This line is no longer needed, you can delete it or comment it out.
+                    # aspect_ratio = aspect_ratio_default 
+                    # A better approach is to just use the new variable name directly.
 
-                clip_id = f"{job_id}_moment{i}_{platform}"
-                clip_result = video_engine.process_single_clip(
+                    clip_id = f"{job_id}_moment{i}_{platform}"
+                    clip_result = video_engine.process_single_clip(
                     video_path, moment, {"add_captions": add_captions, "aspect_ratio": aspect_ratio},
                     user_id, clip_id, full_words_data
                 )
