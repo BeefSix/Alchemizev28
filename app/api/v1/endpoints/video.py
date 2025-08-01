@@ -16,9 +16,11 @@ import zipfile
 import tempfile
 from typing import List
 from app.core.config import settings
+from app.main import limiter
 
 router = APIRouter()
 
+@limiter.limit("5/hour")
 @router.post("/upload-and-clip", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 async def create_videoclip_job_upload(
     file: UploadFile = File(...),

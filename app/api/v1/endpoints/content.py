@@ -5,6 +5,7 @@ from app.db import crud, models
 from app.db.base import get_db
 from app.services.auth import get_current_active_user
 from app.workers import tasks
+from app.main import limiter
 import uuid
 import json
 
@@ -17,6 +18,7 @@ class RepurposeRequest(models.BaseModel):
     style: str = "Concise"
     additional_instructions: str = ""
 
+@limiter.limit("20/hour")
 @router.post("/repurpose", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 def create_repurpose_job(
     request: RepurposeRequest,

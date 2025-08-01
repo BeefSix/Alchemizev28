@@ -7,6 +7,9 @@ from app.core.config import settings
 from app.api.v1.api import api_router
 from app.db.base import init_db
 from app.services import video_engine # Keep this import
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import os
 
 @asynccontextmanager
