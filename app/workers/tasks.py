@@ -59,12 +59,10 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
                 elif platform in ["youtube_shorts", "tiktok", "instagram_reels"]:
                     aspect_ratio = "9:16"
                 else:
-                    # This line is no longer needed, you can delete it or comment it out.
-                    # aspect_ratio = aspect_ratio_default 
-                    # A better approach is to just use the new variable name directly.
+                 aspect_ratio = aspect_ratio # Use the new variable name
 
-                    clip_id = f"{job_id}_moment{i}_{platform}"
-                    clip_result = video_engine.process_single_clip(
+                clip_id = f"{job_id}_moment{i}_{platform}"
+                clip_result = video_engine.process_single_clip(
                     video_path, moment, {"add_captions": add_captions, "aspect_ratio": aspect_ratio},
                     user_id, clip_id, full_words_data
                 )
