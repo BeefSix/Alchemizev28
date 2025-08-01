@@ -29,6 +29,18 @@ STATIC_GENERATED_DIR = settings.STATIC_GENERATED_DIR
 TEMP_DOWNLOAD_DIR = os.path.join(STATIC_GENERATED_DIR, "temp_downloads")
 os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
 
+def ingest_content(content_input: str) -> str:
+    """
+    Ingests content from text or a URL.
+    If it's a URL, it scrapes the content. Otherwise, it returns the text directly.
+    """
+    if is_valid_url(content_input):
+        logger.info(f"Ingesting content from URL: {content_input}")
+        # Make sure scrape_url is defined in your utils
+        return scrape_url(content_input)
+    else:
+        logger.info("Ingesting content from direct text input.")
+        return content_input
 
 # =================== FINAL FIX: THE MISSING FUNCTION ===================
 # This is the new, top-level async function your Celery worker needs.

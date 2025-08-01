@@ -23,7 +23,7 @@ router = APIRouter()
 async def create_videoclip_job_upload(
     file: UploadFile = File(...),
     add_captions: bool = True,
-    aspect_ratio: str = "9:16",  # Accept aspect ratio parameter
+    aspect_ratio: str = "9:16",
     platforms: str = "youtube_shorts,tiktok,instagram_reels",
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
@@ -50,50 +50,19 @@ async def create_videoclip_job_upload(
         
     platform_list = [p.strip() for p in platforms.split(",")]
     
-    # Store the original filename in the job details for user reference
     crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="videoclip", 
                     progress_details={"original_filename": file.filename})
     
-    # Pass the aspect ratio to the worker
     tasks.run_videoclip_upload_job.delay(
         job_id=job_id,
         user_id=current_user.id,
         video_path=file_path,
-        add_captions=add_captions,
-        aspect_ratio=aspect_ratio,  # Pass the user's choice
-        platforms=platform_list
-    )
-    
-    return {"job_id": job_id, "message": "Video processing has started. This may take a few minutes."}
-    
-    # =================== FIX START ===================
-    # Sanitize the filename to avoid errors with special characters
-    _, extension = os.path.splitext(file.filename)
-    sanitized_filename = f"{job_id}{extension}"
-    file_path = os.path.join(upload_dir, sanitized_filename)
-    # =================== FIX END ===================
-    
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    platform_list = [p.strip() for p in platforms.split(",")]
-    
-    # Store the original filename in the job details for user reference
-    crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="videoclip", 
-                    progress_details={"original_filename": file.filename})
-    
-    tasks.run_videoclip_upload_job.delay(
-        job_id=job_id,
-        user_id=current_user.id,
-        video_path=file_path, # Pass the new, clean file path
         add_captions=add_captions,
         aspect_ratio=aspect_ratio,
         platforms=platform_list
     )
     
     return {"job_id": job_id, "message": "Video processing has started. This may take a few minutes."}
-
-# (The rest of the file remains the same)
 
 @router.post("/batch-upload", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 async def create_batch_videoclip_jobs(
@@ -119,7 +88,6 @@ async def create_batch_videoclip_jobs(
 
         job_id = str(uuid.uuid4())
         
-        # Sanitize the filename for batch jobs too
         _, extension = os.path.splitext(file.filename)
         sanitized_filename = f"{job_id}{extension}"
         file_path = os.path.join(upload_dir, sanitized_filename)
@@ -157,26 +125,12 @@ def get_job_status(
     if not job or job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Job not found or not authorized.")
     
-    results = None
-    progress_details = None
-    try:
-        if job.results:
-            results = json.loads(job.results) if isinstance(job.results, str) else job.results
-    except json.JSONDecodeError:
-        results = {"error": "Could not parse results."}
-        
-    try:
-        if job.progress_details:
-            progress_details = json.loads(job.progress_details) if isinstance(job.progress_details, str) else job.progress_details
-    except json.JSONDecodeError:
-        progress_details = {"error": "Could not parse progress details."}
-        
     return {
         "id": job.id,
         "status": job.status,
         "error_message": job.error_message,
-        "results": results,
-        "progress_details": progress_details
+        "results": json.loads(job.results) if job.results else None,
+        "progress_details": json.loads(job.progress_details) if job.progress_details else None
     }
 
 @router.get("/jobs/{job_id}/download-all")
@@ -201,13 +155,14 @@ async def download_all_clips(
     temp_dir = tempfile.mkdtemp()
     zip_path = os.path.join(temp_dir, f"alchemize_clips_{job_id[:8]}.zip")
     
+    unique_urls = set(url for urls in clips_by_platform.values() for url in urls)
+            
     with zipfile.ZipFile(zip_path, 'w') as zipf:
-        for platform, urls in clips_by_platform.items():
-            for i, url in enumerate(urls):
-                file_path = url.replace("/static/", f"{settings.STATIC_GENERATED_DIR}/")
-                if os.path.exists(file_path):
-                    arcname = f"{platform}/clip_{i+1}.mp4"
-                    zipf.write(file_path, arcname)
+        for i, url in enumerate(unique_urls):
+            file_path = os.path.join(settings.STATIC_FILES_ROOT_DIR, url.strip('/'))
+            if os.path.exists(file_path):
+                arcname = f"clip_{i+1}.mp4"
+                zipf.write(file_path, arcname)
 
     return FileResponse(
         path=zip_path,

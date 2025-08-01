@@ -58,61 +58,49 @@ def poll_job_status(job_id, job_type="video"):
     if not job_id:
         return None
     try:
-        # Use the appropriate endpoint based on job type
-        if job_type == "content":
-            endpoint = f"{st.session_state.api_base_url}/content/jobs/{job_id}"
-        else:
-            endpoint = f"{st.session_state.api_base_url}/video/jobs/{job_id}"
-            
+        endpoint = f"{st.session_state.api_base_url}/{job_type}/jobs/{job_id}"
         response = requests.get(
             endpoint,
             headers={"Authorization": f"Bearer {st.session_state.token}"}
         )
-        if response.status_code == 200:
-            return response.json()
-        return None
+        return response.json() if response.status_code == 200 else None
     except requests.exceptions.RequestException:
         return None
 
-# --- Main UI ---
+# --- UI Rendering ---
 with st.sidebar:
-    st.title("⚗️ Alchemize")
+    wizard_image_path = "app/static/img/your_wizard_image.png"
+    if os.path.exists(wizard_image_path):
+        st.sidebar.image(wizard_image_path, width=150)
+    else:
+        st.sidebar.markdown("⚗️", help="Your wizard mascot here!")
+    st.sidebar.title("The Alchemist's Lab")
     st.markdown("---")
-    
     if st.session_state.token:
         st.success(f"Logged in as: {st.session_state.user_email}")
         if st.button("Logout", use_container_width=True):
-            st.session_state.token = None
-            st.session_state.user_email = None
-            st.session_state.content_job_id = None
-            st.session_state.clip_job_id = None
+            for key in list(st.session_state.keys()):
+                if key != 'api_base_url':
+                    del st.session_state[key]
             st.rerun()
-            
-        # Stats section
-        st.markdown("### 📊 Your Stats")
-        st.metric("Videos Processed", "Coming Soon")
-        st.metric("Clips Generated", "Coming Soon")
-        
     else:
         st.markdown("### Access Your Account")
         login_tab, signup_tab = st.tabs(["Login", "Sign Up"])
-        
         with login_tab:
             with st.form("login_form"):
-                email = st.text_input("Email")
-                password = st.text_input("Password", type="password")
+                email = st.text_input("Email", key="login_email")
+                password = st.text_input("Password", type="password", key="login_pass")
                 if st.form_submit_button("Login", use_container_width=True):
                     success, message = login(email, password)
                     if success:
                         st.rerun()
                     else:
                         st.error(message)
-
         with signup_tab:
             with st.form("signup_form"):
-                full_name = st.text_input("Full Name")
-                email = st.text_input("Email")
-                password = st.text_input("Password", type="password")
+                full_name = st.text_input("Full Name", key="signup_name")
+                email = st.text_input("Email", key="signup_email")
+                password = st.text_input("Password", type="password", key="signup_pass")
                 if st.form_submit_button("Sign Up", use_container_width=True):
                     success, message = signup(email, password, full_name)
                     if success:
@@ -120,52 +108,55 @@ with st.sidebar:
                     else:
                         st.error(message)
 
-# --- Main Content ---
 if not st.session_state.token:
     st.title("🧪 Welcome to Alchemize")
     st.markdown("### Turn your videos into viral social media content")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("#### 🎬 Upload Video")
-        st.markdown("Support for MP4, MOV, MKV and more")
-    with col2:
-        st.markdown("#### 🤖 AI Analysis")
-        st.markdown("Find the most engaging moments")
-    with col3:
-        st.markdown("#### 📱 Multi-Platform")
-        st.markdown("Export for every social network")
-    
     st.info("👈 Please log in or sign up to begin")
-    
 else:
-    st.title("🧪 Alchemize Dashboard")
-    
-    # Create tabs for different features
+    st.title("Alchemist's Dashboard")
     tab1, tab2, tab3 = st.tabs(["🎬 Video Clips", "✍️ Content Suite", "⚙️ Settings"])
     
-    # --- VIDEO CLIPS TAB ---
     with tab1:
         st.header("Create Viral Video Clips")
-        
-        if 'clip_job_id' not in st.session_state or st.session_state.clip_job_id is None:
+        job_data = poll_job_status(st.session_state.get('clip_job_id'), job_type="video")
+        status = job_data.get("status") if job_data else "NOT_STARTED"
+
+        if status == "COMPLETED":
+            st.success("✅ Clips generated successfully!")
+            results = job_data.get("results", {})
+            clips_by_platform = results.get("clips_by_platform", {})
+            if clips_by_platform:
+                st.markdown(f"### Generated {sum(len(urls) for urls in clips_by_platform.values())} clips")
+                for platform, urls in clips_by_platform.items():
+                    if urls:
+                        st.markdown(f"#### {platform.replace('_', ' ').title()}")
+                        num_columns = 5
+                        for row_start in range(0, len(urls), num_columns):
+                            cols = st.columns(num_columns)
+                            for i, url in enumerate(urls[row_start:row_start + num_columns]):
+                                with cols[i]:
+                                    full_url = url if url.startswith("http") else f"http://localhost:8000{url}"
+                                    st.video(full_url)
+            if st.button("🎬 Process Another Video", use_container_width=True, key="new_video_job"):
+                st.session_state.clip_job_id = None
+                st.rerun()
+        elif status == "FAILED":
+            st.error(f"Job failed: {job_data.get('error_message', 'Unknown error')}")
+            if st.button("Try Again", key="failed_video_job"):
+                st.session_state.clip_job_id = None
+                st.rerun()
+        elif status in ["PENDING", "IN_PROGRESS"]:
+            progress = job_data.get("progress_details") or {}
+            percentage = progress.get("percentage", 0)
+            description = progress.get("description", "Starting job...")
+            st.info(f"Status: {status}")
+            st.progress(percentage / 100, text=description)
+            time.sleep(3)
+            st.rerun()
+        else:
             with st.form("video_upload_form"):
-                uploaded_file = st.file_uploader(
-                    "Choose a video file", 
-                    type=['mp4', 'mov', 'avi', 'mkv', 'webm'],
-                    help="Maximum file size: 500MB"
-                )
-
-                # Aspect Ratio Selection
-                st.markdown("**Choose Clip Format:**")
-                aspect_ratio = st.radio(
-                    "Select aspect ratio for your clips",
-                    options=["9:16 (Vertical - Shorts/Reels)", "1:1 (Square - Instagram)", "16:9 (Horizontal - YouTube)"],
-                    index=0,
-                    horizontal=True
-                )
-                aspect_ratio_value = aspect_ratio.split(" ")[0]  # Extract just the ratio
-
+                uploaded_file = st.file_uploader("Choose a video file", type=['mp4', 'mov', 'mkv'])
+                aspect_ratio = st.radio("Aspect Ratio", ["9:16", "1:1", "16:9"], index=0, horizontal=True)
                 st.markdown("**Select Platforms:**")
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -177,278 +168,86 @@ else:
                 with col3:
                     linkedin = st.checkbox("LinkedIn")
                     twitter = st.checkbox("Twitter/X")
-                
-                add_captions = st.checkbox("✨ Add Captions", value=True, help="Add animated captions to your clips")
-                
+                add_captions = st.checkbox("✨ Add Captions", value=True)
                 submitted = st.form_submit_button("🚀 Generate Clips", use_container_width=True)
-
-            if submitted and uploaded_file:
-                platforms = []
-                if yt_shorts: platforms.append("youtube_shorts")
-                if tiktok: platforms.append("tiktok")
-                if ig_reels: platforms.append("instagram_reels")
-                if ig_feed: platforms.append("instagram_feed")
-                if linkedin: platforms.append("linkedin")
-                if twitter: platforms.append("twitter")
-
-                if not platforms:
-                    st.error("Please select at least one platform.")
-                else:
-                    with st.spinner("Uploading and processing video..."):
-                        files = {'file': (uploaded_file.name, uploaded_file, uploaded_file.type)}
-                        params = {
-                            "platforms": ",".join(platforms), 
-                            "add_captions": add_captions,
-                            "aspect_ratio": aspect_ratio_value
-                        }
-                        
-                        try:
+                if submitted and uploaded_file:
+                    platforms = [p for p, checked in {
+                        "youtube_shorts": yt_shorts, "tiktok": tiktok, "instagram_reels": ig_reels,
+                        "instagram_feed": ig_feed, "linkedin": linkedin, "twitter": twitter
+                    }.items() if checked]
+                    if not platforms:
+                        st.error("Please select at least one platform.")
+                    else:
+                        with st.spinner("Uploading and starting job..."):
+                            files = {'file': (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                            params = {"platforms": ",".join(platforms), "add_captions": add_captions, "aspect_ratio": aspect_ratio}
                             response = requests.post(
-                                f"{st.session_state.api_base_url}/video/upload-and-clip", 
-                                files=files, 
-                                params=params, 
+                                f"{st.session_state.api_base_url}/video/upload-and-clip",
+                                files=files, params=params,
                                 headers={"Authorization": f"Bearer {st.session_state.token}"}
                             )
                             if response.status_code == 202:
-                                job_info = response.json()
-                                st.session_state.clip_job_id = job_info.get('job_id')
+                                st.session_state.clip_job_id = response.json().get('job_id')
                                 st.rerun()
                             else:
                                 st.error(f"Failed to start job: {response.text}")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-        
-        # Show job status and results
-        if st.session_state.clip_job_id:
-            job_data = poll_job_status(st.session_state.clip_job_id)
-            
-            if job_data:
-                status = job_data.get("status", "UNKNOWN")
-                
-                if status in ["PENDING", "IN_PROGRESS"]:
-                    progress = job_data.get("progress_details", {})
-                    st.info(f"Status: {status}")
-                    if progress:
-                        st.progress(
-                            progress.get("percentage", 0) / 100,
-                            text=progress.get("description", "Processing...")
-                        )
-                    time.sleep(2)
-                    st.rerun()
-                    
-                elif status == "COMPLETED":
-                    st.success("✅ Clips generated successfully!")
-                    
-                    results = job_data.get("results", {})
-                    clips_by_platform = results.get("clips_by_platform", {})
-                    
-                    if clips_by_platform:
-                        # Download button
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.markdown(f"### Generated {sum(len(urls) for urls in clips_by_platform.values())} clips")
-                        with col2:
-                            download_response = requests.get(
-                                f"{st.session_state.api_base_url}/video/jobs/{st.session_state.clip_job_id}/download-all",
-                                headers={"Authorization": f"Bearer {st.session_state.token}"},
-                                stream=True
-                            )
-                            if download_response.status_code == 200:
-                                st.download_button(
-                                    label="📥 Download All",
-                                    data=download_response.content,
-                                    file_name=f"alchemize_clips_{st.session_state.clip_job_id[:8]}.zip",
-                                    mime="application/zip",
-                                    use_container_width=True
-                                )
-                        
-                        # Display clips by platform with 5-column grid
-                        for platform, urls in clips_by_platform.items():
-                            if urls:  # Only show platforms with clips
-                                st.markdown(f"#### {platform.replace('_', ' ').title()}")
-                                
-                                # Create rows of 5 videos
-                                for row_start in range(0, len(urls), 5):
-                                    cols = st.columns(5)
-                                    for i, url in enumerate(urls[row_start:row_start+5]):
-                                        with cols[i]:
-                                            full_url = url if url.startswith("http") else f"http://localhost:8000{url}"
-                                            st.video(full_url)
-                                            st.caption(f"Clip {row_start + i + 1}")
-                        
-                        # New job button
-                        if st.button("🎬 Process Another Video", use_container_width=True):
-                            st.session_state.clip_job_id = None
-                            st.rerun()
-                    else:
-                        st.warning("No clips were generated. Please try again.")
-                        if st.button("Try Again"):
-                            st.session_state.clip_job_id = None
-                            st.rerun()
-                            
-                elif status == "FAILED":
-                    st.error(f"Job failed: {job_data.get('error_message', 'Unknown error')}")
-                    if st.button("Try Again"):
-                        st.session_state.clip_job_id = None
-                        st.rerun()
-    
-    # --- CONTENT SUITE TAB ---
     with tab2:
         st.header("Generate Social Media Content Suite")
-        
-        if 'content_job_id' not in st.session_state or st.session_state.content_job_id is None:
+        content_job_data = poll_job_status(st.session_state.get('content_job_id'), job_type="content")
+        content_status = content_job_data.get("status") if content_job_data else "NOT_STARTED"
+        if content_status == "COMPLETED":
+            st.success("✅ Content generated successfully!")
+            results = content_job_data.get("results", {})
+            if results.get("analysis"):
+                with st.expander("📊 Content Analysis", expanded=True):
+                    st.write(results["analysis"])
+            if results.get("posts"):
+                st.text_area("Generated Posts", results["posts"], height=400)
+            if st.button("✍️ Create New Content", use_container_width=True, key="new_content_job"):
+                st.session_state.content_job_id = None
+                st.rerun()
+        elif content_status == "FAILED":
+            st.error(f"Job failed: {content_job_data.get('error_message', 'Unknown error')}")
+            if st.button("Try Again", key="failed_content_job"):
+                st.session_state.content_job_id = None
+                st.rerun()
+        elif content_status in ["PENDING", "IN_PROGRESS"]:
+            progress = content_job_data.get("progress_details")
+            if progress:
+                percentage = progress.get("percentage", 0)
+                description = progress.get("description", "Working...")
+                st.info(f"Status: {content_status}")
+                st.progress(percentage / 100, text=description)
+            else:
+                st.info("Status: PENDING")
+                st.progress(0, text="Initializing job...")
+            time.sleep(3)
+            st.rerun()
+        else:
             with st.form("content_form"):
-                content_input = st.text_area(
-                    "Enter your content", 
-                    placeholder="Paste text, article URL, or video transcript...",
-                    height=200
-                )
-                
-                # Tone and style options
+                content_input = st.text_area("Enter content", height=200)
                 col1, col2 = st.columns(2)
                 with col1:
-                    tone = st.selectbox(
-                        "Tone",
-                        ["Professional", "Casual", "Enthusiastic", "Educational", "Humorous"],
-                        index=0
-                    )
+                    tone = st.selectbox("Tone", ["Professional", "Casual", "Enthusiastic"])
                 with col2:
-                    style = st.selectbox(
-                        "Writing Style",
-                        ["Concise", "Detailed", "Storytelling", "Data-driven", "Conversational"],
-                        index=0
-                    )
-                
-                st.markdown("**Select Platforms:**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    linkedin_post = st.checkbox("LinkedIn", value=True)
-                    facebook_post = st.checkbox("Facebook", value=True)
-                    twitter_post = st.checkbox("Twitter/X", value=True)
-                with col2:
-                    instagram_post = st.checkbox("Instagram", value=True)
-                    tiktok_post = st.checkbox("TikTok Caption", value=True)
-                    blog_post = st.checkbox("Blog Post")
-                
-                # Additional instructions
-                additional_instructions = st.text_area(
-                    "Additional Instructions (optional)",
-                    placeholder="Any specific requirements, hashtags to include, CTAs, etc.",
-                    height=100
-                )
-                
+                    style = st.selectbox("Writing Style", ["Concise", "Detailed", "Storytelling"])
+                additional_instructions = st.text_area("Additional Instructions (optional)")
                 submitted = st.form_submit_button("✨ Generate Content", use_container_width=True)
-            
-            if submitted and content_input:
-                platforms = []
-                if linkedin_post: platforms.append("LinkedIn")
-                if facebook_post: platforms.append("Facebook")
-                if twitter_post: platforms.append("Twitter")
-                if instagram_post: platforms.append("Instagram")
-                if tiktok_post: platforms.append("TikTok")
-                if blog_post: platforms.append("Blog")
-                
-                with st.spinner("Generating content..."):
-                    try:
-                        # Include tone and style in the request
+                if submitted and content_input:
+                    with st.spinner("Starting content job..."):
                         payload = {
-                            "content": content_input,
-                            "platforms": platforms,
-                            "tone": tone,
-                            "style": style,
-                            "additional_instructions": additional_instructions
+                            "content": content_input, "platforms": ["LinkedIn", "Twitter"],
+                            "tone": tone, "style": style, "additional_instructions": additional_instructions
                         }
-                        
                         response = requests.post(
-                            f"{st.session_state.api_base_url}/content/repurpose",
-                            json=payload,
+                            f"{st.session_state.api_base_url}/content/repurpose", json=payload,
                             headers={"Authorization": f"Bearer {st.session_state.token}"}
                         )
                         if response.status_code == 202:
-                            job_info = response.json()
-                            st.session_state.content_job_id = job_info.get('job_id')
+                            st.session_state.content_job_id = response.json().get('job_id')
                             st.rerun()
                         else:
                             st.error(f"Failed: {response.text}")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-        
-        # Show content job status
-        if st.session_state.content_job_id:
-            job_data = poll_job_status(st.session_state.content_job_id, job_type="content")
-            
-            if job_data:
-                status = job_data.get("status", "UNKNOWN")
-                
-                if status in ["PENDING", "IN_PROGRESS"]:
-                    progress = job_data.get("progress_details", {})
-                    st.info(f"Status: {status}")
-                    if progress:
-                        st.progress(
-                            progress.get("percentage", 0) / 100,
-                            text=progress.get("description", "Processing...")
-                        )
-                    time.sleep(2)
-                    st.rerun()
-                    
-                elif status == "COMPLETED":
-                    st.success("✅ Content generated successfully!")
-                    
-                    results = job_data.get("results", {})
-                    if results:
-                        # Show analysis
-                        if results.get("analysis"):
-                            with st.expander("📊 Content Analysis", expanded=True):
-                                st.write(results["analysis"])
-                        
-                        # Show generated posts with reroll functionality
-                        if results.get("posts"):
-                            st.markdown("### Generated Posts")
-                            
-                            # Control buttons
-                            col1, col2, col3 = st.columns([2, 1, 1])
-                            with col1:
-                                st.markdown("**Your content is ready!**")
-                            with col2:
-                                if st.button("🔄 Regenerate", use_container_width=True):
-                                    # Reuse the same content but trigger new generation
-                                    st.session_state.content_job_id = None
-                                    st.rerun()
-                            with col3:
-                                st.download_button(
-                                    "📋 Download",
-                                    data=results["posts"],
-                                    file_name=f"social_posts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                                    mime="text/plain",
-                                    use_container_width=True
-                                )
-                            
-                            # Display posts
-                            st.text_area("", results["posts"], height=400)
-                        
-                        # New content button
-                        if st.button("✍️ Create New Content", use_container_width=True):
-                            st.session_state.content_job_id = None
-                            st.rerun()
-                            
-                elif status == "FAILED":
-                    st.error(f"Job failed: {job_data.get('error_message', 'Unknown error')}")
-                    if st.button("Try Again"):
-                        st.session_state.content_job_id = None
-                        st.rerun()
-    
-    # --- SETTINGS TAB ---
     with tab3:
         st.header("Settings")
         st.info("Brand voice customization and preferences coming soon!")
-        
-        # Placeholder for future settings
-        with st.expander("🎨 Brand Voice"):
-            st.text_input("Brand Tone", placeholder="Professional, Casual, Friendly...")
-            st.text_area("Sample Posts", placeholder="Paste examples of your brand's writing style...")
-            st.button("Save Brand Voice", disabled=True)
-        
-        with st.expander("🔧 Preferences"):
-            st.slider("Default Clip Length", 15, 60, 30, help="Default length for video clips in seconds")
-            st.multiselect("Default Platforms", ["YouTube Shorts", "TikTok", "Instagram Reels"])
-            st.button("Save Preferences", disabled=True)
