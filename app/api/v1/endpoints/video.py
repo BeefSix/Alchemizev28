@@ -1,5 +1,5 @@
 # app/api/v1/endpoints/video.py
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request
 from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -16,13 +16,14 @@ import zipfile
 import tempfile
 from typing import List
 from app.core.config import settings
-from app.main import limiter
+from app.core.limiter import limiter
 
 router = APIRouter()
 
 @limiter.limit("5/hour")
 @router.post("/upload-and-clip", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 async def create_videoclip_job_upload(
+    request: Request,
     file: UploadFile = File(...),
     add_captions: bool = Form(...),
     aspect_ratio: str = Form(...),

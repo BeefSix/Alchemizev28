@@ -184,9 +184,12 @@ def generate_thumbnail_job(self, job_id: str, user_id: int, prompt_text: str):
     asyncio.run(_async_generate_thumbnail_job(job_id, user_id, prompt_text))
 
 async def _async_generate_thumbnail_job(job_id: str, user_id: int, prompt_text: str):
-    db = next(get_db())
     try:
-        crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating prompts...", "percentage": 10})
+        # --- DB Write 1: Set initial status ---
+        with get_db_session() as db:
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating prompts...", "percentage": 10})
+
+        # --- Long-running AI Task (no DB connection held) ---
         prompt_gen_prompt = f'Based on the content, generate 3 striking prompts for an AI image generator to create a thumbnail. Respond with ONLY a valid JSON list of strings.\nCONTENT: {prompt_text}'
         image_prompts = []
         for _ in range(3):
@@ -199,16 +202,31 @@ async def _async_generate_thumbnail_job(job_id: str, user_id: int, prompt_text: 
                         break
                 except (json.JSONDecodeError, TypeError):
                     pass
-            await asyncio.sleep(1)
+            await asyncio.sleep(1) # Wait before retrying
+        
         if not image_prompts: raise Exception("Failed to generate valid image prompts.")
+        
         urls = []
         for i, prompt in enumerate(image_prompts):
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Generating thumbnail {i+1}/{len(image_prompts)}...", "percentage": 20+int(((i+1)/len(image_prompts))*75)})
-            url = video_engine.sd_generator.generate_image(prompt, 1280, 720) # Assuming this is synchronous
+            # --- DB Write (for each loop iteration) ---
+            with get_db_session() as db:
+                progress = 20 + int(((i + 1) / len(image_prompts)) * 75)
+                crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Generating thumbnail {i+1}/{len(image_prompts)}...", "percentage": progress})
+            
+            # --- Long-running Image Generation Task (no DB connection held) ---
+            url = video_engine.sd_generator.generate_image(prompt, 1280, 720)
             if url:
                 urls.append(url)
+                # This call to track_usage now safely manages its own DB session inside utils.py
                 utils.track_usage("stable-diffusion-local", user_id, 'thumbnail', custom_cost=0.0)
+
         if not urls: raise Exception("No thumbnails were successfully generated.")
-        crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Thumbnails ready!", "percentage": 100}, results={"thumbnail_urls": urls})
+        
+        # --- DB Write: Final Success Status ---
+        with get_db_session() as db:
+            crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Thumbnails ready!", "percentage": 100}, results={"thumbnail_urls": urls})
+            
     except Exception as e:
-        crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Thumbnail generation failed: {str(e)}")
+        # --- DB Write: Final Failure Status ---
+        with get_db_session() as db:
+            crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Thumbnail generation failed: {str(e)}")

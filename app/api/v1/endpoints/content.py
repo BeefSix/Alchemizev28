@@ -1,11 +1,11 @@
 # app/api/v1/endpoints/content.py
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from app.db import crud, models
 from app.db.base import get_db
 from app.services.auth import get_current_active_user
 from app.workers import tasks
-from app.main import limiter
+from app.core.limiter import limiter
 import uuid
 import json
 

@@ -31,6 +31,11 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+from app.core.limiter import limiter # Import from the new file
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # Mount the static files directory
 app.mount("/static", StaticFiles(directory=settings.STATIC_FILES_ROOT_DIR), name="static")
 
