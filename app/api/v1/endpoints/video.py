@@ -124,13 +124,13 @@ def get_job_status(
     job = crud.get_job(db, job_id=job_id)
     if not job or job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Job not found or not authorized.")
-    
+
     return {
         "id": job.id,
         "status": job.status,
         "error_message": job.error_message,
-        "results": json.loads(job.results) if job.results else None,
-        "progress_details": json.loads(job.progress_details) if job.progress_details else None
+        "results": job.results,  # No need to parse if it's already a dict
+        "progress_details": job.progress_details # No need to parse if it's already a dict
     }
 
 @router.get("/jobs/{job_id}/download-all")
