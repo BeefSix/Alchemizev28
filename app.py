@@ -153,7 +153,7 @@ else:
             st.progress(percentage / 100, text=description)
             time.sleep(3)
             st.rerun()
-        else:
+        else: # NOT_STARTED
             with st.form("video_upload_form"):
                 uploaded_file = st.file_uploader("Choose a video file", type=['mp4', 'mov', 'mkv'])
                 aspect_ratio = st.radio("Aspect Ratio", ["9:16", "1:1", "16:9"], index=0, horizontal=True)
@@ -170,6 +170,7 @@ else:
                     twitter = st.checkbox("Twitter/X")
                 add_captions = st.checkbox("✨ Add Captions", value=True)
                 submitted = st.form_submit_button("🚀 Generate Clips", use_container_width=True)
+
                 if submitted and uploaded_file:
                     platforms = [p for p, checked in {
                         "youtube_shorts": yt_shorts, "tiktok": tiktok, "instagram_reels": ig_reels,
@@ -180,21 +181,22 @@ else:
                     else:
                         with st.spinner("Uploading and starting job..."):
                             files = {'file': (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                            params = {"platforms": ",".join(platforms), "add_captions": add_captions, "aspect_ratio": aspect_ratio}
+                            data = {"platforms": ",".join(platforms), "add_captions": add_captions, "aspect_ratio": aspect_ratio}
                             response = requests.post(
                                 f"{st.session_state.api_base_url}/video/upload-and-clip",
-                                files=files, params=params,
+                                files=files, data=data,
                                 headers={"Authorization": f"Bearer {st.session_state.token}"}
                             )
                             if response.status_code == 202:
                                 st.session_state.clip_job_id = response.json().get('job_id')
                                 st.rerun()
                             else:
-                                st.error(f"Failed to start job: {response.text}")
+                                st.error(f"Failed to start job: {response.status_code} - {response.text}")
     with tab2:
         st.header("Generate Social Media Content Suite")
         content_job_data = poll_job_status(st.session_state.get('content_job_id'), job_type="content")
         content_status = content_job_data.get("status") if content_job_data else "NOT_STARTED"
+
         if content_status == "COMPLETED":
             st.success("✅ Content generated successfully!")
             results = content_job_data.get("results", {})
@@ -223,9 +225,20 @@ else:
                 st.progress(0, text="Initializing job...")
             time.sleep(3)
             st.rerun()
-        else:
+        else: # NOT_STARTED
             with st.form("content_form"):
                 content_input = st.text_area("Enter content", height=200)
+                st.markdown("**Select Platforms:**")
+                cols = st.columns(3)
+                content_platform_options = {
+                    "LinkedIn": "LinkedIn", "Twitter/X": "Twitter", "Facebook": "Facebook",
+                    "Instagram": "Instagram", "TikTok Caption": "TikTok", "Blog Post": "Blog"
+                }
+                user_content_platforms = {}
+                for i, (label, value) in enumerate(content_platform_options.items()):
+                    with cols[i % 3]:
+                        user_content_platforms[label] = st.checkbox(label, value=True, key=f"content_{value}")
+                
                 col1, col2 = st.columns(2)
                 with col1:
                     tone = st.selectbox("Tone", ["Professional", "Casual", "Enthusiastic"])
@@ -233,21 +246,29 @@ else:
                     style = st.selectbox("Writing Style", ["Concise", "Detailed", "Storytelling"])
                 additional_instructions = st.text_area("Additional Instructions (optional)")
                 submitted = st.form_submit_button("✨ Generate Content", use_container_width=True)
+
                 if submitted and content_input:
-                    with st.spinner("Starting content job..."):
-                        payload = {
-                            "content": content_input, "platforms": ["LinkedIn", "Twitter"],
-                            "tone": tone, "style": style, "additional_instructions": additional_instructions
-                        }
-                        response = requests.post(
-                            f"{st.session_state.api_base_url}/content/repurpose", json=payload,
-                            headers={"Authorization": f"Bearer {st.session_state.token}"}
-                        )
-                        if response.status_code == 202:
-                            st.session_state.content_job_id = response.json().get('job_id')
-                            st.rerun()
-                        else:
-                            st.error(f"Failed: {response.text}")
+                    selected_content_platforms = [value for label, checked in user_content_platforms.items() if checked]
+                    if not selected_content_platforms:
+                        st.error("Please select at least one platform.")
+                    else:
+                        with st.spinner("Starting content job..."):
+                            payload = {
+                                "content": content_input, 
+                                "platforms": selected_content_platforms,
+                                "tone": tone, 
+                                "style": style, 
+                                "additional_instructions": additional_instructions
+                            }
+                            response = requests.post(
+                                f"{st.session_state.api_base_url}/content/repurpose", json=payload,
+                                headers={"Authorization": f"Bearer {st.session_state.token}"}
+                            )
+                            if response.status_code == 202:
+                                st.session_state.content_job_id = response.json().get('job_id')
+                                st.rerun()
+                            else:
+                                st.error(f"Failed: {response.text}")
     with tab3:
         st.header("Settings")
         st.info("Brand voice customization and preferences coming soon!")

@@ -36,7 +36,6 @@ def ingest_content(content_input: str) -> str:
     """
     if is_valid_url(content_input):
         logger.info(f"Ingesting content from URL: {content_input}")
-        # Make sure scrape_url is defined in your utils
         return scrape_url(content_input)
     else:
         logger.info("Ingesting content from direct text input.")

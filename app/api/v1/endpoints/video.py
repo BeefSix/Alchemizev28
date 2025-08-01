@@ -1,5 +1,5 @@
 # app/api/v1/endpoints/video.py
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from starlette.background import BackgroundTask
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -22,9 +22,9 @@ router = APIRouter()
 @router.post("/upload-and-clip", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 async def create_videoclip_job_upload(
     file: UploadFile = File(...),
-    add_captions: bool = True,
-    aspect_ratio: str = "9:16",
-    platforms: str = "youtube_shorts,tiktok,instagram_reels",
+    add_captions: bool = Form(...),
+    aspect_ratio: str = Form(...),
+    platforms: str = Form(...),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
