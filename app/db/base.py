@@ -1,14 +1,22 @@
 # app/db/base.py
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.pool import QueuePool
 from app.core.config import settings
 from contextlib import contextmanager
 
-# The engine and Base configuration remain the same
+# --- THIS IS THE FIX ---
+# We've added connection pooling parameters to the engine.
 engine = create_engine(
     settings.DATABASE_URL,
-    pool_pre_ping=True # Helps manage stale connections
+    poolclass=QueuePool,
+    pool_size=10,         # Number of connections to keep open in the pool
+    max_overflow=20,      # Max number of connections to allow in addition to pool_size
+    pool_pre_ping=True,   # Checks that connections are alive before use
+    pool_recycle=3600     # Recycles connections after 1 hour to prevent stale connections
 )
+# --- END FIX ---
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
@@ -25,8 +33,6 @@ def get_db():
     finally:
         db.close()
 
-# --- THIS IS THE FIX ---
-# This new function is for use in background tasks (Celery)
 @contextmanager
 def get_db_session():
     """

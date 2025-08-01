@@ -20,6 +20,18 @@ from app.db import crud
 from app.db.base import get_db
 from app.core.config import settings
 
+def _parse_score_from_response(response_text: str) -> int:
+    """Extracts a score from the AI's response, handling digits and words."""
+    if not response_text: return 0
+
+    score_match = re.search(r'\d+', response_text)
+    if score_match: return int(score_match.group())
+
+    number_words = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10}
+    for word, value in number_words.items():
+        if word in response_text.lower(): return value
+    return 0 # Default score if nothing is found
+
 # --- Initialization ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -395,9 +407,11 @@ async def analyze_content_chunks(text_chunks: list[str], user_id: int) -> list[i
     return high_scoring_indices[:5]
 
 async def _get_chunk_score(prompt, user_id, index):
-    response_str = await run_ai_generation(prompt, user_id, model="gpt-4o-mini", max_tokens=5, temperature=0.1)
-    match = re.search(r'\d+', response_str or "")
-    score = int(match.group(0)) if match else 5
+    """Gets a score for a content chunk using the robust parsing logic."""
+    response_str = await run_ai_generation(prompt, user_id, model="gpt-4o-mini", max_tokens=10, temperature=0.1)
+    # --- START UPGRADE (from video_processor.py) ---
+    score = _parse_score_from_response(response_str)
+    # --- END UPGRADE ---
     return {"index": index, "score": score}
 # =================== FIX END ===================
 

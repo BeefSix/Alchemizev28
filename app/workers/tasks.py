@@ -24,98 +24,71 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
         _async_videoclip_upload_job(job_id, user_id, video_path, add_captions, aspect_ratio, platforms)
     )
 
-async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio: str, platforms: list[str]):
+async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio_default: str, platforms: list[str]):
     """The main asynchronous logic for processing an uploaded video."""
-    audio_path = None # Define audio_path here to ensure it's available in the finally block
-    
+    audio_path = None
     try:
-        # --- DB Write 1: Set initial status ---
         with get_db_session() as db:
-            if not os.path.isabs(video_path):
-                video_path = os.path.abspath(video_path)
-            if not os.path.exists(video_path):
-                raise FileNotFoundError(f"Video file not found: {video_path}")
-            
-            logger.info(f"Processing video: {video_path} (size: {os.path.getsize(video_path)} bytes)")
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Extracting audio from video...", "percentage": 10})
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Preparing video...", "percentage": 5})
 
-        # --- Long-running task: Audio Extraction ---
         audio_path = video_path.rsplit('.', 1)[0] + '_audio.mp3'
-        command = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'mp3', '-ab', '192k', '-ar', '44100', '-y', audio_path]
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-        logger.info(f"Audio extracted successfully: {audio_path}")
+        extract_cmd = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'mp3', '-y', audio_path]
+        subprocess.run(extract_cmd, check=True, capture_output=True, text=True)
 
-        # --- DB Write 2: Update status ---
-        with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Transcribing audio (this may take a few minutes)...", "percentage": 25})
-        
-        # --- Long-running task: Transcription ---
         transcript_result = await utils.transcribe_local_audio_file(audio_path, user_id, job_id)
         if not transcript_result or not transcript_result.get('success'):
-            raise ValueError(f"Transcription failed: {transcript_result.get('error', 'Unknown error')}")
-        
+            raise ValueError("Transcription failed")
+
         full_words_data = transcript_result['data']['words']
-        
-        # --- DB Write 3: Update status ---
-        with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Analyzing content for viral moments...", "percentage": 50})
-        
-        # --- Long-running task: AI Analysis ---
         speech_segments = utils.detect_silence_and_chunk(audio_path)
         text_chunks = [' '.join(w['word'] for w in full_words_data if seg['start'] <= w.get('start', 0) <= seg['end']) for seg in speech_segments]
         viral_indices = await utils.analyze_content_chunks(text_chunks, user_id)
-        if not viral_indices:
-            viral_indices = list(range(min(3, len(speech_segments))))
-        
-        moments = [{'start': speech_segments[idx]['start'], 'duration': min(speech_segments[idx]['end'] - speech_segments[idx]['start'], 60)} for idx in viral_indices if idx < len(speech_segments)]
-        clips_by_platform = {p: [] for p in platforms}
+        if not viral_indices: viral_indices = list(range(min(3, len(speech_segments))))
 
-        # --- Loop for Clip Creation ---
+        moments = [
+            {'start': max(0, speech_segments[idx]['start'] - 2), 'duration': min(speech_segments[idx]['end'] - speech_segments[idx]['start'] + 4, 60)}
+            for idx in viral_indices if idx < len(speech_segments)
+        ]
+
+        clips_by_platform = {p: [] for p in platforms}
+        total_clips_to_make = len(moments) * len(platforms)
+        clips_made = 0
+
         for i, moment in enumerate(moments):
-            with get_db_session() as db:
-                progress = 50 + int(((i + 1) / len(moments)) * 45) if len(moments) > 0 else 95
-                crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                    progress_details={"description": f"Creating clip {i+1}/{len(moments)}...", "percentage": progress})
-            
-            clip_id = f"{job_id}_clip_{i+1}"
-            clip_result = video_engine.process_single_clip(
-                video_path, moment, {"add_captions": add_captions, "aspect_ratio": aspect_ratio, "platform": "multi-platform"},
-                user_id, clip_id, full_words_data
-            )
-            if clip_result.get('success'):
-                for platform in platforms:
+            for platform in platforms:
+                clips_made += 1
+                with get_db_session() as db:
+                    progress = 50 + int((clips_made / total_clips_to_make) * 45)
+                    crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Creating clip {clips_made}/{total_clips_to_make} for {platform}...", "percentage": progress})
+
+                if platform in ["instagram_feed", "linkedin", "twitter"]:
+                    aspect_ratio = "1:1"
+                elif platform in ["youtube_shorts", "tiktok", "instagram_reels"]:
+                    aspect_ratio = "9:16"
+                else:
+                    aspect_ratio = aspect_ratio_default
+
+                clip_id = f"{job_id}_moment{i}_{platform}"
+
+                clip_result = video_engine.process_single_clip(
+                    video_path, moment, {"add_captions": add_captions, "aspect_ratio": aspect_ratio},
+                    user_id, clip_id, full_words_data
+                )
+                if clip_result.get('success'):
                     clips_by_platform[platform].append(clip_result['url'])
-        
+
         if not any(clips_by_platform.values()):
             raise ValueError("No clips were successfully generated")
 
-        # --- DB Write 4: Final Success Status ---
         with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "COMPLETED", 
-                progress_details={"description": "All clips generated successfully!", "percentage": 100}, 
-                results={"clips_by_platform": clips_by_platform})
-        logger.info(f"Job completed successfully.")
+            crud.update_job_full_status(db, job_id, "COMPLETED", results={"clips_by_platform": clips_by_platform})
 
     except Exception as e:
-        import traceback
-        error_message = f"Job failed: {str(e)}"
-        logger.error(f"ERROR for job {job_id}: {error_message}\n{traceback.format_exc()}")
-        # --- DB Write 5: Final Failure Status ---
         with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "FAILED", error_message=error_message)
-
+            crud.update_job_full_status(db, job_id, "FAILED", error_message=str(e))
     finally:
-        # --- THIS BLOCK ALWAYS RUNS ---
         if audio_path and os.path.exists(audio_path):
-            try:
-                os.remove(audio_path)
-                logger.info(f"Cleaned up audio file: {audio_path}")
-            except Exception as e:
-                logger.error(f"Error cleaning up audio file: {e}")
-
+            os.remove(audio_path)
 
 @celery_app.task(bind=True)
 def run_content_repurpose_job(self, job_id: str, user_id: int, content_input: str, platforms: list[str], tone: str, style: str, additional_instructions: str):
@@ -187,45 +160,47 @@ async def _async_generate_thumbnail_job(job_id: str, user_id: int, prompt_text: 
     try:
         # --- DB Write 1: Set initial status ---
         with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating prompts...", "percentage": 10})
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating thumbnail prompts...", "percentage": 10})
 
-        # --- Long-running AI Task (no DB connection held) ---
+        # --- Long-running AI Task with Retry Logic ---
         prompt_gen_prompt = f'Based on the content, generate 3 striking prompts for an AI image generator to create a thumbnail. Respond with ONLY a valid JSON list of strings.\nCONTENT: {prompt_text}'
         image_prompts = []
-        for _ in range(3):
+        for attempt in range(3): # Try up to 3 times
             response_str = await utils.run_ai_generation(prompt_gen_prompt, user_id, "gpt-4o-mini", 500, expect_json=True)
             if response_str:
                 try:
                     prompts = json.loads(response_str)
                     if isinstance(prompts, list) and prompts:
                         image_prompts = prompts
-                        break
+                        logger.info("Successfully generated and parsed image prompts.")
+                        break # Success, exit the loop
                 except (json.JSONDecodeError, TypeError):
-                    pass
-            await asyncio.sleep(1) # Wait before retrying
-        
-        if not image_prompts: raise Exception("Failed to generate valid image prompts.")
-        
+                    logger.warning(f"Failed to parse AI response on attempt {attempt + 1}. Retrying...")
+                    await asyncio.sleep(2) # Wait before retrying
+            image_prompts = [] # Reset if parsing failed
+
+        if not image_prompts: 
+            raise Exception("Failed to generate valid image prompts after multiple attempts.")
+
+        # --- Image Generation Loop (no changes needed here) ---
         urls = []
         for i, prompt in enumerate(image_prompts):
-            # --- DB Write (for each loop iteration) ---
             with get_db_session() as db:
                 progress = 20 + int(((i + 1) / len(image_prompts)) * 75)
                 crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": f"Generating thumbnail {i+1}/{len(image_prompts)}...", "percentage": progress})
-            
-            # --- Long-running Image Generation Task (no DB connection held) ---
+
             url = video_engine.sd_generator.generate_image(prompt, 1280, 720)
             if url:
                 urls.append(url)
-                # This call to track_usage now safely manages its own DB session inside utils.py
                 utils.track_usage("stable-diffusion-local", user_id, 'thumbnail', custom_cost=0.0)
 
-        if not urls: raise Exception("No thumbnails were successfully generated.")
-        
+        if not urls: 
+            raise Exception("No thumbnails were successfully generated.")
+
         # --- DB Write: Final Success Status ---
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Thumbnails ready!", "percentage": 100}, results={"thumbnail_urls": urls})
-            
+
     except Exception as e:
         # --- DB Write: Final Failure Status ---
         with get_db_session() as db:
