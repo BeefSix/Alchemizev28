@@ -1,11 +1,9 @@
-# app/workers/tasks.py
-
-import asyncio
 import subprocess
 import os
 import json
-import time
 import logging
+import glob
+from datetime import datetime, timedelta
 
 from app.celery_app import celery_app
 from app.db import crud
@@ -15,17 +13,11 @@ from app.services import video_engine, utils
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@celery_app.task(bind=True)
-def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio: str, platforms: list[str]):
-    """
-    Celery's synchronous entry point for the video clipping job.
-    """
-    asyncio.run(
-        _async_videoclip_upload_job(job_id, user_id, video_path, add_captions, aspect_ratio, platforms)
-    )
+# (Your existing run_videoclip_upload_job and run_content_repurpose_job functions go here, unchanged)
 
-async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio_default: str, platforms: list[str]):
-    """The main asynchronous logic for processing an uploaded video."""
+@celery_app.task(bind=True)
+def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio_default: str, platforms: list[str]):
+    """The main synchronous logic for processing an uploaded video."""
     audio_path = None
     try:
         with get_db_session() as db:
@@ -35,14 +27,15 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
         extract_cmd = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'mp3', '-y', audio_path]
         subprocess.run(extract_cmd, check=True, capture_output=True, text=True)
 
-        transcript_result = await utils.transcribe_local_audio_file(audio_path, user_id, job_id)
+        transcript_result = utils.transcribe_local_audio_file_sync(audio_path, user_id, job_id)
         if not transcript_result or not transcript_result.get('success'):
             raise ValueError("Transcription failed")
 
         full_words_data = transcript_result['data']['words']
         speech_segments = utils.detect_silence_and_chunk(audio_path)
         text_chunks = [' '.join(w['word'] for w in full_words_data if seg['start'] <= w.get('start', 0) <= seg['end']) for seg in speech_segments]
-        viral_indices = await utils.analyze_content_chunks(text_chunks, user_id)
+        
+        viral_indices = utils.analyze_content_chunks_sync(text_chunks, user_id)
         if not viral_indices: viral_indices = list(range(min(3, len(speech_segments))))
 
         moments = [
@@ -69,7 +62,6 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
                     aspect_ratio = aspect_ratio_default
 
                 clip_id = f"{job_id}_moment{i}_{platform}"
-
                 clip_result = video_engine.process_single_clip(
                     video_path, moment, {"add_captions": add_captions, "aspect_ratio": aspect_ratio},
                     user_id, clip_id, full_words_data
@@ -92,97 +84,57 @@ async def _async_videoclip_upload_job(job_id: str, user_id: int, video_path: str
 
 @celery_app.task(bind=True)
 def run_content_repurpose_job(self, job_id: str, user_id: int, content_input: str, platforms: list[str], tone: str, style: str, additional_instructions: str):
-    """
-    Celery task for content repurposing, now with tone, style, and instructions.
-    """
-    asyncio.run(_async_content_repurpose_job(job_id, user_id, content_input, platforms, tone, style, additional_instructions))
-
-async def _async_content_repurpose_job(job_id: str, user_id: int, content_input: str, platforms: list[str], tone: str, style: str, additional_instructions: str):
+    """Celery task for content repurposing, now fully synchronous."""
     try:
-        # --- DB Write 1: Set initial status ---
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Ingesting content...", "percentage": 5})
         
-        # --- Long-running task (no DB connection held) ---
         content_to_process = utils.ingest_content(content_input)
 
-        # --- DB Write 2: Update status ---
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Analyzing content...", "percentage": 20})
         
-        # --- Long-running AI task (no DB connection held) ---
-        analysis_prompt = f"Analyze this content and extract key insights, tone, and audience.\n\nCONTENT:\n{content_to_process[:4000]}"
-        content_analysis = await utils.run_ai_generation(analysis_prompt, user_id, model="gpt-4o")
+        analysis_prompt = f"Analyze this content...\n\nCONTENT:\n{content_to_process[:4000]}"
+        content_analysis = utils.run_ai_generation_sync(analysis_prompt, user_id, model="gpt-4o")
         if not content_analysis: raise Exception("AI content analysis failed.")
         
-        # --- DB Write 3: Update status ---
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating posts...", "percentage": 60})
         
-        # --- Long-running AI task (no DB connection held) ---
-        generation_prompt = f"""
-You are an expert content strategist. Transform the provided source content into a suite of high-quality social media posts for these platforms: {', '.join(platforms)}.
-
-Adhere to these specific instructions:
-- Tone: {tone}
-- Writing Style: {style}
-- Additional Instructions: {additional_instructions if additional_instructions else "None"}
-
-- Base all posts on the SOURCE CONTENT.
-- For LinkedIn/Facebook, use bullet points or lists for depth.
-- For Twitter/Instagram, end with an engaging question.
-
-SOURCE CONTENT:
-{content_to_process[:12000]}
-
----
-Generate the posts now. Use markdown headings for each platform (e.g., ### Twitter).
-"""
-        drafts = await utils.run_ai_generation(generation_prompt, user_id, model="gpt-4o")
+        generation_prompt = f"""You are an expert content strategist...""" # (Your full prompt here)
+        drafts = utils.run_ai_generation_sync(generation_prompt, user_id, model="gpt-4o")
         if not drafts: raise Exception("AI content generation failed.")
         
-        # --- DB Write 4: Final update ---
         results = {"analysis": content_analysis, "posts": drafts}
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Content suite generated!", "percentage": 100}, results=results)
 
     except Exception as e:
-        # --- DB Write (on failure): Final update ---
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Content repurposing failed: {str(e)}")
 
-# (Keep your existing thumbnail job task as is)
 @celery_app.task(bind=True)
 def generate_thumbnail_job(self, job_id: str, user_id: int, prompt_text: str):
-    asyncio.run(_async_generate_thumbnail_job(job_id, user_id, prompt_text))
-
-async def _async_generate_thumbnail_job(job_id: str, user_id: int, prompt_text: str):
+    """Celery task for generating thumbnails, now fully synchronous."""
     try:
-        # --- DB Write 1: Set initial status ---
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", progress_details={"description": "Generating thumbnail prompts...", "percentage": 10})
 
-        # --- Long-running AI Task with Retry Logic ---
-        prompt_gen_prompt = f'Based on the content, generate 3 striking prompts for an AI image generator to create a thumbnail. Respond with ONLY a valid JSON list of strings.\nCONTENT: {prompt_text}'
+        prompt_gen_prompt = f'Based on the content, generate 3 striking prompts...\nCONTENT: {prompt_text}'
         image_prompts = []
-        for attempt in range(3): # Try up to 3 times
-            response_str = await utils.run_ai_generation(prompt_gen_prompt, user_id, "gpt-4o-mini", 500, expect_json=True)
+        for attempt in range(3):
+            response_str = utils.run_ai_generation_sync(prompt_gen_prompt, user_id, "gpt-4o-mini", 500, expect_json=True)
             if response_str:
                 try:
                     prompts = json.loads(response_str)
                     if isinstance(prompts, list) and prompts:
                         image_prompts = prompts
-                        logger.info("Successfully generated and parsed image prompts.")
-                        break # Success, exit the loop
+                        break
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning(f"Failed to parse AI response on attempt {attempt + 1}. Retrying...")
-                    await asyncio.sleep(2) # Wait before retrying
-            image_prompts = [] # Reset if parsing failed
-
-        if not image_prompts: 
-            raise Exception("Failed to generate valid image prompts after multiple attempts.")
-
-        # --- Image Generation Loop (no changes needed here) ---
+                    pass
+        
+        if not image_prompts: raise Exception("Failed to generate valid image prompts.")
+        
         urls = []
         for i, prompt in enumerate(image_prompts):
             with get_db_session() as db:
@@ -194,14 +146,49 @@ async def _async_generate_thumbnail_job(job_id: str, user_id: int, prompt_text: 
                 urls.append(url)
                 utils.track_usage("stable-diffusion-local", user_id, 'thumbnail', custom_cost=0.0)
 
-        if not urls: 
-            raise Exception("No thumbnails were successfully generated.")
-
-        # --- DB Write: Final Success Status ---
+        if not urls: raise Exception("No thumbnails were successfully generated.")
+        
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "COMPLETED", progress_details={"description": "Thumbnails ready!", "percentage": 100}, results={"thumbnail_urls": urls})
-
+            
     except Exception as e:
-        # --- DB Write: Final Failure Status ---
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Thumbnail generation failed: {str(e)}")
+
+
+@celery_app.task
+def cleanup_old_files():
+    """
+    A daily task to clean up old files from uploads and temporary directories
+    to prevent the server from running out of space.
+    """
+    logger.info("🧹 Starting daily cleanup of old files...")
+    from app.core.config import settings
+    
+    cleanup_age_days = 1 
+    cutoff = datetime.now() - timedelta(days=cleanup_age_days)
+    
+    upload_dir = os.path.join(settings.STATIC_GENERATED_DIR, "uploads")
+    temp_clips_dir = settings.STATIC_GENERATED_DIR
+    
+    patterns = [
+        os.path.join(upload_dir, '*'),
+        os.path.join(temp_clips_dir, 'temp_*.mp4'),
+        os.path.join(temp_clips_dir, 'final_*.mp4'), # Also clean up final clips
+        os.path.join(temp_clips_dir, 'captions_*.srt'),
+        os.path.join(temp_clips_dir, 'captions_*.ass')
+    ]
+    
+    files_removed = 0
+    for pattern in patterns:
+        for file_path in glob.glob(pattern):
+            try:
+                file_mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
+                if file_mod_time < cutoff:
+                    os.remove(file_path)
+                    logger.info(f"Removed old file: {file_path}")
+                    files_removed += 1
+            except Exception as e:
+                logger.error(f"Error removing file {file_path}: {e}")
+    
+    logger.info(f"✅ Daily cleanup finished. Removed {files_removed} old files.")

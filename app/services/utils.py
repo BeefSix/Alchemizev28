@@ -36,7 +36,8 @@ def _parse_score_from_response(response_text: str) -> int:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
+client = OpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
+async_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
 STATIC_GENERATED_DIR = settings.STATIC_GENERATED_DIR
 TEMP_DOWNLOAD_DIR = os.path.join(STATIC_GENERATED_DIR, "temp_downloads")
 os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
@@ -109,6 +110,10 @@ async def transcribe_local_audio_file(audio_path: str, user_id: int, job_id: str
     except Exception as e:
         logger.error(f"An error occurred in transcribe_local_audio_file for job {job_id}: {e}")
         return {"success": False, "error": str(e)}
+    
+    def transcribe_local_audio_file_sync(audio_path: str, user_id: int, job_id: str):
+         """Synchronous wrapper for the async transcription function."""
+         return asyncio.run(transcribe_local_audio_file(audio_path, user_id, job_id))
 
 async def transcribe_audio_chunk(audio_file_path: str):
     """Helper function to transcribe a single audio chunk."""
@@ -116,7 +121,7 @@ async def transcribe_audio_chunk(audio_file_path: str):
         return {"success": False, "error": "OpenAI client not initialized."}
     try:
         with open(audio_file_path, 'rb') as f:
-            transcript_result = await client.audio.transcriptions.create(
+            transcript_result = await async_client.audio.transcriptions.create(
                 model="whisper-1", 
                 file=f, 
                 response_format="verbose_json", 
@@ -364,7 +369,7 @@ async def run_ai_generation(prompt: str, user_id: int, model: str = "gpt-4o-mini
     
     try:
         response_format = {"type": "json_object"} if expect_json else {"type": "text"}
-        response = await client.chat.completions.create(
+        response = await async_client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
@@ -406,6 +411,14 @@ async def analyze_content_chunks(text_chunks: list[str], user_id: int) -> list[i
     
     return high_scoring_indices[:5]
 
+def analyze_content_chunks_sync(text_chunks: list[str], user_id: int) -> list[int]:
+    """Synchronous wrapper for the async content analysis function."""
+    return asyncio.run(analyze_content_chunks(text_chunks, user_id))
+
+def run_ai_generation_sync(prompt: str, user_id: int, model: str = "gpt-4o-mini", max_tokens: int = 2000, temperature: float = 0.5, expect_json: bool = False):
+    """Synchronous wrapper for the async AI generation function."""
+    return asyncio.run(run_ai_generation(prompt, user_id, model, max_tokens, temperature, expect_json))
+
 async def _get_chunk_score(prompt, user_id, index):
     """Gets a score for a content chunk using the robust parsing logic."""
     response_str = await run_ai_generation(prompt, user_id, model="gpt-4o-mini", max_tokens=10, temperature=0.1)
@@ -431,3 +444,32 @@ async def _ingest_text_or_article_sync(content_input: str, user_id: int) -> dict
             return {"success": True, "content": content_input}
     except Exception as e:
         return {"success": False, "error": str(e)}
+# --- SYNCHRONOUS WRAPPERS FOR CELERY TASKS ---
+
+def run_ai_generation_sync(prompt: str, user_id: int, model: str = "gpt-4o-mini", max_tokens: int = 2000, temperature: float = 0.5, expect_json: bool = False):
+    """Synchronous version of the AI generation function for Celery."""
+    if not client:
+        return None
+    try:
+        response_format = {"type": "json_object"} if expect_json else {"type": "text"}
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format
+        )
+        result = response.choices[0].message.content
+        # (Usage tracking and validation logic can be added here if needed)
+        return result
+    except Exception as e:
+        logger.error(f"Synchronous AI generation error: {e}")
+        return None
+
+def transcribe_local_audio_file_sync(audio_path: str, user_id: int, job_id: str):
+    """Synchronous wrapper for the async transcription function."""
+    return asyncio.run(transcribe_local_audio_file(audio_path, user_id, job_id))
+
+def analyze_content_chunks_sync(text_chunks: list[str], user_id: int) -> list[int]:
+    """Synchronous wrapper for the async content analysis function."""
+    return asyncio.run(analyze_content_chunks(text_chunks, user_id))

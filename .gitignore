@@ -49,3 +49,7 @@ usage_log.json
 
 # REMOVED: .streamlit/ directory should NOT be ignored
 # We need this directory for Docker configuration
+
+# Ignore user-uploaded media and generated files
+/data/static/generated/uploads/
+/data/static/generated/temp_downloads/
