@@ -3,6 +3,7 @@ import requests
 import time
 import os
 import json
+import sys
 from datetime import datetime
 
 # --- Page Configuration ---
@@ -13,15 +14,27 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- Initialize Session State ---
+# --- Initialize Session State with Multiple fallback options ---
 def init_session_state():
+    # Multiple fallback options for API URL
+    api_url_options = [
+        os.environ.get("API_BASE_URL"),
+        "http://web:8000/api/v1",
+        "http://localhost:8000/api/v1"
+    ]
+    
+    # Use the first non-None option
+    api_base_url = next((url for url in api_url_options if url), "http://localhost:8000/api/v1")
+    
     defaults = {
         'token': None,
         'user_email': None,
         'content_job_id': None,
         'clip_job_id': None,
-        'api_base_url': os.environ.get("API_BASE_URL", "http://localhost:8000/api/v1"),
-        'last_poll_time': 0
+        'api_base_url': api_base_url,
+        'last_poll_time': 0,
+        'connection_tested': False,
+        'connection_status': None
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -29,22 +42,85 @@ def init_session_state():
 
 init_session_state()
 
+# --- Enhanced Connection Test ---
+def test_api_connection():
+    """Test API connection with multiple fallback URLs"""
+    if st.session_state.connection_tested:
+        return st.session_state.connection_status
+    
+    # Test multiple possible URLs
+    test_urls = [
+        st.session_state.api_base_url.replace("/api/v1", "/health"),
+        "http://web:8000/health",
+        "http://localhost:8000/health"
+    ]
+    
+    for test_url in test_urls:
+        try:
+            response = requests.get(test_url, timeout=5)
+            if response.status_code == 200:
+                st.session_state.connection_status = True
+                st.session_state.connection_tested = True
+                
+                # Update API base URL based on successful connection
+                if "web:8000" in test_url:
+                    st.session_state.api_base_url = "http://web:8000/api/v1"
+                elif "localhost:8000" in test_url:
+                    st.session_state.api_base_url = "http://localhost:8000/api/v1"
+                
+                return True
+        except Exception as e:
+            continue
+    
+    # If all URLs fail
+    st.session_state.connection_status = False
+    st.session_state.connection_tested = True
+    return False
+
 # --- Helper Functions ---
 def make_api_request(method, endpoint, **kwargs):
-    """Make API request with error handling"""
+    """Make API request with enhanced error handling"""
     try:
         url = f"{st.session_state.api_base_url}{endpoint}"
-        response = requests.request(method, url, timeout=30, **kwargs)
+        
+        # Debug info
+        st.write(f"🔍 DEBUG: Making {method} request to: {url}")
+        st.write(f"🔍 DEBUG: Request data: {kwargs}")
+        
+        kwargs.setdefault('timeout', 30)
+        response = requests.request(method, url, **kwargs)
+        
+        # Debug response
+        st.write(f"🔍 DEBUG: Response status: {response.status_code}")
+        st.write(f"🔍 DEBUG: Response headers: {dict(response.headers)}")
+        st.write(f"🔍 DEBUG: Response text: {response.text[:500]}...")
+        
         return response
     except requests.exceptions.RequestException as e:
-        st.error(f"API connection error: {e}")
+        st.error(f"🔍 DEBUG: API connection error: {e}")
+        st.error(f"🔍 DEBUG: Error type: {type(e)}")
+        st.session_state.connection_tested = False
+        return None
+    except Exception as e:
+        st.error(f"🔍 DEBUG: Unexpected error: {e}")
+        st.error(f"🔍 DEBUG: Error type: {type(e)}")
         return None
 
 def login(email, password):
+    # Add debug info
+    st.write(f"🔍 DEBUG: Attempting login for {email}")
+    st.write(f"🔍 DEBUG: Using API URL: {st.session_state.api_base_url}")
+    
     response = make_api_request(
         "POST", "/auth/token",
         data={"username": email, "password": password}
     )
+    
+    # Add debug info about response
+    if response:
+        st.write(f"🔍 DEBUG: Response status: {response.status_code}")
+        st.write(f"🔍 DEBUG: Response text: {response.text[:200]}...")
+    
     if response and response.status_code == 200:
         st.session_state.token = response.json()['access_token']
         st.session_state.user_email = email
@@ -52,7 +128,7 @@ def login(email, password):
     elif response:
         return False, response.json().get("detail", "Invalid credentials")
     else:
-        return False, "Could not connect to the API. Is the backend running?"
+        return False, "Could not connect to the API. Please check the connection."
 
 def signup(email, password, full_name):
     response = make_api_request(
@@ -134,14 +210,90 @@ def render_job_status(job_id, job_type):
     
     return None
 
+# --- DEBUG: Show environment and connection info ---
+def show_debug_info():
+    """Display debug information"""
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("🔧 Debug Info", expanded=False):
+        st.write("**Environment Variables:**")
+        st.code(f"""
+API_BASE_URL (env): {os.environ.get('API_BASE_URL', 'NOT SET')}
+API_BASE_URL (session): {st.session_state.get('api_base_url', 'NOT SET')}
+Connection Status: {st.session_state.get('connection_status', 'NOT TESTED')}
+        """)
+        
+        # Test direct connection
+        if st.button("🧪 Test All URLs", key="debug_test"):
+            st.write("**Testing all possible URLs:**")
+            test_urls = [
+                "http://web:8000/health",
+                "http://localhost:8000/health",
+                "http://web:8000/api/v1/",
+                "http://localhost:8000/api/v1/"
+            ]
+            
+            for url in test_urls:
+                try:
+                    response = requests.get(url, timeout=3)
+                    st.success(f"✅ {url} → {response.status_code}")
+                except Exception as e:
+                    st.error(f"❌ {url} → {str(e)}")
+
+# --- Main UI ---
+st.title("🧪 Alchemize - Video to Viral Content")
+
+# Connection status at the top
+col1, col2 = st.columns([4, 1])
+with col1:
+    if test_api_connection():
+        st.success(f"🟢 Connected to API (Using: {st.session_state.api_base_url})")
+    else:
+        st.error("🔴 Cannot connect to API - Check debug info in sidebar")
+
+with col2:
+    if st.button("🔄 Retry Connection"):
+        st.session_state.connection_tested = False
+        st.rerun()
+
 # --- Sidebar ---
 with st.sidebar:
     st.markdown("⚗️", help="Your wizard mascot here!")
     st.title("The Alchemist's Lab")
-    st.markdown("---")
-
-    if st.session_state.token:
-        st.success(f"Logged in as: {st.session_state.user_email}")
+    
+    # Show debug info
+    show_debug_info()
+    
+    if st.session_state.connection_status and not st.session_state.token:
+        st.markdown("### 🔐 Login / Sign Up")
+        
+        tab1, tab2 = st.tabs(["Login", "Sign Up"])
+        
+        with tab1:
+            with st.form("login_form"):
+                email = st.text_input("Email", key="login_email")
+                password = st.text_input("Password", type="password", key="login_pass")
+                if st.form_submit_button("Login", use_container_width=True):
+                    success, message = login(email, password)
+                    if success:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+        
+        with tab2:
+            with st.form("signup_form"):
+                full_name = st.text_input("Full Name", key="signup_name")
+                email = st.text_input("Email", key="signup_email")
+                password = st.text_input("Password", type="password", key="signup_pass")
+                if st.form_submit_button("Sign Up", use_container_width=True):
+                    success, message = signup(email, password, full_name)
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+    
+    elif st.session_state.token:
+        st.success(f"✅ Logged in as: {st.session_state.user_email}")
         if st.button("Logout", use_container_width=True):
             st.session_state.token = None
             st.session_state.user_email = None
@@ -153,37 +305,64 @@ with st.sidebar:
         st.metric("Videos Processed", "Coming Soon")
         st.metric("Clips Generated", "Coming Soon")
     else:
-        st.markdown("### Access Your Account")
-        login_tab, signup_tab = st.tabs(["Login", "Sign Up"])
-        
-        with login_tab:
-            with st.form("login_form"):
-                email = st.text_input("Email", key="login_email")
-                password = st.text_input("Password", type="password", key="login_pass")
-                if st.form_submit_button("Login", use_container_width=True):
-                    success, message = login(email, password)
-                    if success:
-                        st.rerun()
-                    else:
-                        st.error(message)
-        
-        with signup_tab:
-            with st.form("signup_form"):
-                full_name = st.text_input("Full Name", key="signup_name")
-                email = st.text_input("Email", key="signup_email")
-                password = st.text_input("Password", type="password", key="signup_pass")
-                if st.form_submit_button("Sign Up", use_container_width=True):
-                    success, message = signup(email, password, full_name)
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
+        st.error("⚠️ Cannot connect to API")
+        st.info("Please check that the backend is running and try refreshing the page.")
 
 # --- Main Content ---
-if not st.session_state.token:
-    st.title("🧪 Welcome to Alchemize")
+if not st.session_state.connection_status:
+    st.error("🔌 **Connection Issue Detected**")
+    st.markdown("""
+    The frontend cannot connect to the backend API. Here's how to fix it:
+    
+    **1. Check Backend Status:**
+    ```bash
+    curl http://localhost:8000/health
+    ```
+    
+    **2. Check Docker Containers:**
+    ```bash
+    docker-compose ps
+    ```
+    
+    **3. Check Inter-container Communication:**
+    ```bash
+    docker exec alchemize_frontend curl http://web:8000/health
+    ```
+    
+    **4. Restart Services:**
+    ```bash
+    docker-compose restart frontend web
+    ```
+    """)
+
+elif not st.session_state.token:
     st.markdown("### Turn your videos into viral social media content")
     st.info("👈 Please log in or sign up to begin")
+    
+    # Show features while not logged in
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("""
+        **🎤 Live Karaoke Captions**
+        - Words highlight as spoken
+        - Perfect timing sync
+        - Professional quality
+        """)
+    with col2:
+        st.markdown("""
+        **📱 Multi-Platform Ready**
+        - 9:16 (TikTok/Instagram)
+        - 1:1 (Instagram Square)
+        - 16:9 (YouTube/Facebook)
+        """)
+    with col3:
+        st.markdown("""
+        **⚡ AI-Powered Processing**
+        - Auto clip generation
+        - Content optimization
+        - Hardware acceleration
+        """)
+
 else:
     st.title("Alchemist's Dashboard")
     
@@ -249,7 +428,7 @@ else:
                     st.rerun()
 
         else:
-            # Video upload form - simplified and improved
+            # Video upload form
             with st.form("video_upload_form"):
                 uploaded_file = st.file_uploader(
                     "Choose any video file", 
@@ -273,22 +452,6 @@ else:
                         index=0
                     )
                     add_captions_bool = add_captions.startswith("Yes")
-                
-                # Enhanced info about the process
-                st.success("🎯 **What happens next:**")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("""
-                    • **Video Analysis**: AI finds the best moments
-                    • **Auto Clip Creation**: Multiple clips generated
-                    • **Live Karaoke Captions**: Words highlight as spoken
-                    """)
-                with col2:
-                    st.markdown("""
-                    • **Perfect Aspect Ratios**: Optimized for each platform
-                    • **Professional Quality**: Hardware-accelerated processing
-                    • **Instant Download**: Get all clips in one ZIP file
-                    """)
                 
                 submitted = st.form_submit_button("🚀 Create Clips with Live Captions", use_container_width=True)
 
@@ -332,19 +495,6 @@ else:
                 
                 if results.get("posts"):
                     st.markdown("### Generated Content")
-                    
-                    # Show settings used
-                    settings_used = results.get("settings", {})
-                    if settings_used:
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Tone", settings_used.get("tone", "N/A"))
-                        with col2:
-                            st.metric("Style", settings_used.get("style", "N/A"))
-                        with col3:
-                            platforms = results.get("platforms", [])
-                            st.metric("Platforms", len(platforms))
-                    
                     st.text_area("Social Media Posts", results["posts"], height=500)
                 
                 if st.button("✍️ Create New Content", use_container_width=True, key="new_content_job"):
@@ -357,8 +507,7 @@ else:
                 content_input = st.text_area(
                     "Enter content or URL", 
                     height=200,
-                    placeholder="Paste text, article URL, or YouTube URL here...",
-                    help="📝 Raw text • 🔗 Article URLs • 📺 YouTube URLs"
+                    placeholder="Paste text, article URL, or YouTube URL here..."
                 )
                 
                 col1, col2 = st.columns(2)
@@ -373,11 +522,6 @@ else:
                     default=["LinkedIn", "Twitter", "Instagram"]
                 )
                 
-                additional_instructions = st.text_area(
-                    "Additional Instructions (optional)",
-                    placeholder="e.g., Include specific hashtags, mention target audience, add call-to-action..."
-                )
-                
                 submitted = st.form_submit_button("✨ Generate Content Suite", use_container_width=True)
 
                 if submitted and content_input.strip() and platforms:
@@ -387,7 +531,7 @@ else:
                             "platforms": platforms,
                             "tone": tone, 
                             "style": style, 
-                            "additional_instructions": additional_instructions
+                            "additional_instructions": ""
                         }
                         response = make_api_request(
                             "POST", "/content/repurpose",
@@ -455,20 +599,22 @@ else:
         with st.expander("🔧 System Information"):
             st.write(f"**API URL:** {st.session_state.api_base_url}")
             st.write(f"**Logged in as:** {st.session_state.user_email}")
+            st.write(f"**Connection Status:** {'🟢 Connected' if st.session_state.connection_status else '🔴 Disconnected'}")
             
-            # Test API connection
-if st.button("Test API Connection"):
-    # Test the health endpoint (without /api/v1 prefix)
-    try:
-        health_url = st.session_state.api_base_url.replace("/api/v1", "/health")
-        response = requests.get(health_url, timeout=5)
-        if response and response.status_code == 200:
-            st.success("✅ API connection successful!")
-            st.json(response.json())
-        else:
-            st.error("❌ API connection failed!")
-    except Exception as e:
-        st.error(f"❌ Connection error: {e}")
+            # Advanced debugging
+            if st.button("🔍 Advanced Debug"):
+                st.code(f"""
+# Environment Variables:
+API_BASE_URL = {os.environ.get('API_BASE_URL', 'Not Set')}
+
+# Session State:
+connection_tested = {st.session_state.connection_tested}
+connection_status = {st.session_state.connection_status}
+api_base_url = {st.session_state.api_base_url}
+
+# Health Check URL:
+{st.session_state.api_base_url.replace('/api/v1', '/health')}
+                """)
         
         # Clear jobs
         st.markdown("---")
@@ -477,3 +623,7 @@ if st.button("Test API Connection"):
             st.session_state.content_job_id = None
             st.success("All job history cleared!")
             st.rerun()
+
+# --- Footer ---
+st.markdown("---")
+st.markdown(f"**Debug Info:** API URL: `{st.session_state.api_base_url}` | Status: {'🟢 Connected' if st.session_state.connection_status else '🔴 Disconnected'}")

@@ -40,8 +40,10 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
       interval: 15s
@@ -60,8 +62,10 @@ services:
       - ./app:/app/app
       - ./data/static:/app/static
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     deploy:
       resources:
         reservations:
@@ -84,8 +88,10 @@ services:
       - ./app:/app/app
       - ./data/static:/app/static
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     profiles:
       - cpu
 
@@ -100,8 +106,10 @@ services:
     volumes:
       - ./app:/app/app
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build:
@@ -116,28 +124,11 @@ services:
       - "8501:8501"
     environment:
       - API_BASE_URL=http://web:8000/api/v1
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
     depends_on:
       web:
         condition: service_healthy
-
-  worker-gpu:
-    build:
-      context: .
-      dockerfile: Dockerfile.gpu
-    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=4 -Q gpu
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    volumes:
-      - ./app:/app/app
-      - ./data/static:/app/static
-    depends_on:
-      - redis
-      - db
 
 volumes:
   alchemize_postgres_data:
