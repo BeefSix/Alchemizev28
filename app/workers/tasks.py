@@ -1,3 +1,4 @@
+# app/workers/tasks.py
 import subprocess
 import os
 import json
@@ -15,126 +16,139 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(bind=True)
 def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, add_captions: bool, aspect_ratio: str, platforms: list[str]):
-    """Process uploaded video and create clips for multiple platforms."""
+    """Process uploaded video and create clips - simplified and more reliable."""
     audio_path = None
     
     try:
-        logger.info(f"Starting video job {job_id} for user {user_id}")
+        logger.info(f"Starting video job {job_id} for user {user_id} with video: {video_path}")
+        
+        # Verify video file exists
+        if not os.path.exists(video_path):
+            raise ValueError(f"Video file not found: {video_path}")
         
         # Update initial status
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Preparing video...", "percentage": 5})
+                progress_details={"description": "Processing video file...", "percentage": 10})
 
-        # Extract audio from video
-        audio_path = video_path.rsplit('.', 1)[0] + '_audio.mp3'
-        extract_cmd = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'mp3', '-y', audio_path]
-        result = subprocess.run(extract_cmd, check=True, capture_output=True, text=True)
+        # Get video info first
+        info_cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', video_path]
+        result = subprocess.run(info_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise ValueError(f"Invalid video file or ffprobe failed: {result.stderr}")
         
-        with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Transcribing audio...", "percentage": 15})
+        video_info = json.loads(result.stdout)
+        duration = float(video_info['format']['duration'])
+        logger.info(f"Video duration: {duration} seconds")
 
-        # Transcribe audio
-        transcript_result = utils.transcribe_local_audio_file_sync(audio_path, user_id, job_id)
-        if not transcript_result or not transcript_result.get('success'):
-            raise ValueError(f"Transcription failed: {transcript_result.get('error', 'Unknown error')}")
-
-        full_words_data = transcript_result['data']['words']
-        
-        with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Analyzing content for best moments...", "percentage": 30})
-
-        # Find speech segments and analyze content
-        speech_segments = utils.detect_silence_and_chunk(audio_path)
-        text_chunks = [
-            ' '.join(w['word'] for w in full_words_data 
-                    if seg['start'] <= w.get('start', 0) <= seg['end']) 
-            for seg in speech_segments
+        # Extract audio for transcription
+        audio_path = os.path.join(os.path.dirname(video_path), f"{job_id}_audio.mp3")
+        extract_cmd = [
+            'ffmpeg', '-i', video_path, 
+            '-vn', '-acodec', 'mp3', '-ar', '16000', '-ac', '1',
+            '-y', audio_path
         ]
         
-        viral_indices = utils.analyze_content_chunks_sync(text_chunks, user_id)
-        if not viral_indices: 
-            viral_indices = list(range(min(3, len(speech_segments))))
-
-        # Create moments for clipping
-        moments = []
-        for idx in viral_indices:
-            if idx < len(speech_segments):
-                seg = speech_segments[idx]
-                moment = {
-                    'start': max(0, seg['start'] - 2),
-                    'duration': min(seg['end'] - seg['start'] + 4, 60)
-                }
-                moments.append(moment)
-
-        if not moments:
-            raise ValueError("No suitable moments found for clipping")
-
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Creating video clips...", "percentage": 40})
+                progress_details={"description": "Extracting audio...", "percentage": 20})
+        
+        result = subprocess.run(extract_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise ValueError(f"Audio extraction failed: {result.stderr}")
 
-        # Generate clips for each platform
-        clips_by_platform = {p: [] for p in platforms}
-        total_clips_to_make = len(moments) * len(platforms)
-        clips_made = 0
+        # Transcribe audio for captions
+        transcript_result = None
+        words_data = []
+        
+        if add_captions:
+            with get_db_session() as db:
+                crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                    progress_details={"description": "Transcribing for captions...", "percentage": 30})
+            
+            transcript_result = utils.transcribe_local_audio_file_sync(audio_path, user_id, job_id)
+            if transcript_result and transcript_result.get('success'):
+                words_data = transcript_result['data'].get('words', [])
+                logger.info(f"Transcription successful: {len(words_data)} words")
+            else:
+                logger.warning(f"Transcription failed: {transcript_result.get('error') if transcript_result else 'Unknown error'}")
+                # Continue without captions rather than failing
+                add_captions = False
 
-        for i, moment in enumerate(moments):
-            for platform in platforms:
-                clips_made += 1
-                
-                # Update progress
-                with get_db_session() as db:
-                    progress = 40 + int((clips_made / total_clips_to_make) * 55)
-                    crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                        progress_details={
-                            "description": f"Creating clip {clips_made}/{total_clips_to_make} for {platform}...", 
-                            "percentage": progress
-                        })
+        # Create clips based on video duration
+        with get_db_session() as db:
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                progress_details={"description": "Creating video clips...", "percentage": 50})
 
-                # Set aspect ratio based on platform
-                clip_aspect_ratio = aspect_ratio  # Default to user choice
-                if platform in ["instagram_feed", "linkedin", "twitter"]:
-                    clip_aspect_ratio = "1:1"
-                elif platform in ["youtube_shorts", "tiktok", "instagram_reels"]:
-                    clip_aspect_ratio = "9:16"
+        # Generate multiple clips from different parts of the video
+        clips_created = []
+        clip_duration = min(60, duration * 0.8)  # Max 60 seconds or 80% of video
+        
+        # Create 3-5 clips from different parts
+        num_clips = min(5, max(1, int(duration // 30)))  # 1 clip per 30 seconds, max 5
+        
+        for i in range(num_clips):
+            # Distribute clips evenly across video
+            start_time = (duration / (num_clips + 1)) * (i + 1) - (clip_duration / 2)
+            start_time = max(0, min(start_time, duration - clip_duration))
+            
+            moment = {
+                'start': start_time,
+                'duration': clip_duration
+            }
+            
+            clip_id = f"{job_id}_clip_{i+1}"
+            
+            # Update progress
+            progress = 50 + int((i / num_clips) * 45)
+            with get_db_session() as db:
+                crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                    progress_details={
+                        "description": f"Creating clip {i+1}/{num_clips}...", 
+                        "percentage": progress
+                    })
 
-                # Generate clip
-                clip_id = f"{job_id}_moment{i}_{platform}"
-                clip_result = video_engine.process_single_clip(
-                    video_path, 
-                    moment, 
-                    {"add_captions": add_captions, "aspect_ratio": clip_aspect_ratio},
-                    user_id, 
-                    clip_id, 
-                    full_words_data
-                )
-                
-                if clip_result.get('success'):
-                    clips_by_platform[platform].append(clip_result['url'])
-                else:
-                    logger.warning(f"Failed to create clip {clip_id}: {clip_result.get('error', 'Unknown error')}")
+            # Generate clip
+            clip_result = video_engine.process_single_clip(
+                video_path, 
+                moment, 
+                {"add_captions": add_captions, "aspect_ratio": aspect_ratio},
+                user_id, 
+                clip_id, 
+                words_data
+            )
+            
+            if clip_result.get('success'):
+                clips_created.append(clip_result['url'])
+                logger.info(f"Successfully created clip {i+1}: {clip_result['url']}")
+            else:
+                logger.warning(f"Failed to create clip {i+1}: {clip_result.get('error', 'Unknown error')}")
 
-        # Check if any clips were created
-        total_clips_created = sum(len(urls) for urls in clips_by_platform.values())
-        if total_clips_created == 0:
+        if not clips_created:
             raise ValueError("No clips were successfully generated")
 
-        # Mark as completed
+        # Mark as completed - simplified results structure
+        results = {
+            "clips_by_platform": {
+                "all_platforms": clips_created  # Simplified - no platform-specific logic
+            },
+            "total_clips": len(clips_created),
+            "video_duration": duration,
+            "captions_added": add_captions
+        }
+
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "COMPLETED", 
-                progress_details={"description": f"Generated {total_clips_created} clips!", "percentage": 100},
-                results={"clips_by_platform": clips_by_platform})
+                progress_details={"description": f"Generated {len(clips_created)} clips!", "percentage": 100},
+                results=results)
 
-        logger.info(f"Video job {job_id} completed successfully with {total_clips_created} clips")
+        logger.info(f"Video job {job_id} completed successfully with {len(clips_created)} clips")
 
     except Exception as e:
         logger.error(f"Video job {job_id} failed: {str(e)}")
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "FAILED", error_message=str(e))
-        raise  # Re-raise for Celery error handling
+        raise
         
     finally:
         # Clean up audio file
