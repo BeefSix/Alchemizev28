@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- Initialize Session State with Multiple fallback options ---
+# --- Initialize Session State ---
 def init_session_state():
     # Multiple fallback options for API URL
     api_url_options = [
@@ -79,56 +79,37 @@ def test_api_connection():
 
 # --- Helper Functions ---
 def make_api_request(method, endpoint, **kwargs):
-    """Make API request with enhanced error handling"""
+    """Make API request with clean error handling (no debug spam)"""
     try:
         url = f"{st.session_state.api_base_url}{endpoint}"
-        
-        # Debug info
-        st.write(f"🔍 DEBUG: Making {method} request to: {url}")
-        st.write(f"🔍 DEBUG: Request data: {kwargs}")
-        
         kwargs.setdefault('timeout', 30)
         response = requests.request(method, url, **kwargs)
-        
-        # Debug response
-        st.write(f"🔍 DEBUG: Response status: {response.status_code}")
-        st.write(f"🔍 DEBUG: Response headers: {dict(response.headers)}")
-        st.write(f"🔍 DEBUG: Response text: {response.text[:500]}...")
-        
         return response
     except requests.exceptions.RequestException as e:
-        st.error(f"🔍 DEBUG: API connection error: {e}")
-        st.error(f"🔍 DEBUG: Error type: {type(e)}")
+        st.error(f"API connection error: {e}")
         st.session_state.connection_tested = False
-        return None
-    except Exception as e:
-        st.error(f"🔍 DEBUG: Unexpected error: {e}")
-        st.error(f"🔍 DEBUG: Error type: {type(e)}")
         return None
 
 def login(email, password):
-    # Add debug info
-    st.write(f"🔍 DEBUG: Attempting login for {email}")
-    st.write(f"🔍 DEBUG: Using API URL: {st.session_state.api_base_url}")
-    
     response = make_api_request(
         "POST", "/auth/token",
         data={"username": email, "password": password}
     )
-    
-    # Add debug info about response
-    if response:
-        st.write(f"🔍 DEBUG: Response status: {response.status_code}")
-        st.write(f"🔍 DEBUG: Response text: {response.text[:200]}...")
     
     if response and response.status_code == 200:
         st.session_state.token = response.json()['access_token']
         st.session_state.user_email = email
         return True, "Login successful!"
     elif response:
-        return False, response.json().get("detail", "Invalid credentials")
+        # Fix: Parse JSON once and store it
+        try:
+            error_data = response.json()
+            error_detail = error_data.get("detail", "Login failed")
+        except:
+            error_detail = f"HTTP {response.status_code}: {response.text}"
+        return False, error_detail
     else:
-        return False, "Could not connect to the API. Please check the connection."
+        return False, "Could not connect to the API."
 
 def signup(email, password, full_name):
     response = make_api_request(
@@ -138,7 +119,13 @@ def signup(email, password, full_name):
     if response and response.status_code == 200:
         return True, "Signup successful! Please log in."
     elif response:
-        return False, response.json().get("detail", "Could not create user.")
+        # Fix: Parse JSON once and store it
+        try:
+            error_data = response.json()
+            error_detail = error_data.get("detail", "Signup failed")
+        except:
+            error_detail = f"HTTP {response.status_code}: {response.text}"
+        return False, error_detail
     else:
         return False, "Could not connect to the API."
 
@@ -147,9 +134,9 @@ def poll_job_status(job_id, job_type="video"):
     if not job_id:
         return None
     
-    # Rate limit polling to every 3 seconds
+    # Rate limit polling to every 5 seconds (reduced flashing)
     current_time = time.time()
-    if current_time - st.session_state.last_poll_time < 3:
+    if current_time - st.session_state.last_poll_time < 5:
         return None
     
     st.session_state.last_poll_time = current_time
@@ -168,16 +155,19 @@ def clear_job_state(job_type):
         st.session_state.content_job_id = None
 
 def render_job_status(job_id, job_type):
-    """Render job status with proper error handling"""
+    """Render job status with manual refresh (no auto-refresh spam)"""
     if not job_id:
         return None
         
     job_data = poll_job_status(job_id, job_type)
     
     if not job_data:
-        st.warning("Checking job status...")
-        time.sleep(1)
-        st.rerun()
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.warning("Checking job status...")
+        with col2:
+            if st.button("🔄 Refresh", key=f"refresh_{job_id}"):
+                st.rerun()
         return None
     
     status = job_data.get("status", "UNKNOWN")
@@ -192,6 +182,9 @@ def render_job_status(job_id, job_type):
         st.info(f"🔄 {description}")
         if percentage > 0:
             st.progress(percentage / 100)
+        # Manual refresh button for active jobs
+        if st.button("🔄 Refresh Status", key=f"refresh_active_{job_id}"):
+            st.rerun()
     elif status == "COMPLETED":
         st.success("✅ Job completed successfully!")
         return job_data
@@ -203,41 +196,7 @@ def render_job_status(job_id, job_type):
             st.rerun()
         return None
     
-    # Auto-refresh for active jobs
-    if status in ["PENDING", "IN_PROGRESS"]:
-        time.sleep(2)
-        st.rerun()
-    
     return None
-
-# --- DEBUG: Show environment and connection info ---
-def show_debug_info():
-    """Display debug information"""
-    st.sidebar.markdown("---")
-    with st.sidebar.expander("🔧 Debug Info", expanded=False):
-        st.write("**Environment Variables:**")
-        st.code(f"""
-API_BASE_URL (env): {os.environ.get('API_BASE_URL', 'NOT SET')}
-API_BASE_URL (session): {st.session_state.get('api_base_url', 'NOT SET')}
-Connection Status: {st.session_state.get('connection_status', 'NOT TESTED')}
-        """)
-        
-        # Test direct connection
-        if st.button("🧪 Test All URLs", key="debug_test"):
-            st.write("**Testing all possible URLs:**")
-            test_urls = [
-                "http://web:8000/health",
-                "http://localhost:8000/health",
-                "http://web:8000/api/v1/",
-                "http://localhost:8000/api/v1/"
-            ]
-            
-            for url in test_urls:
-                try:
-                    response = requests.get(url, timeout=3)
-                    st.success(f"✅ {url} → {response.status_code}")
-                except Exception as e:
-                    st.error(f"❌ {url} → {str(e)}")
 
 # --- Main UI ---
 st.title("🧪 Alchemize - Video to Viral Content")
@@ -260,8 +219,10 @@ with st.sidebar:
     st.markdown("⚗️", help="Your wizard mascot here!")
     st.title("The Alchemist's Lab")
     
-    # Show debug info
-    show_debug_info()
+    # Minimal debug info (no spam)
+    with st.expander("🔧 Debug Info", expanded=False):
+        st.write(f"**API URL:** {st.session_state.api_base_url}")
+        st.write(f"**Connection Status:** {st.session_state.connection_status}")
     
     if st.session_state.connection_status and not st.session_state.token:
         st.markdown("### 🔐 Login / Sign Up")
@@ -311,29 +272,7 @@ with st.sidebar:
 # --- Main Content ---
 if not st.session_state.connection_status:
     st.error("🔌 **Connection Issue Detected**")
-    st.markdown("""
-    The frontend cannot connect to the backend API. Here's how to fix it:
-    
-    **1. Check Backend Status:**
-    ```bash
-    curl http://localhost:8000/health
-    ```
-    
-    **2. Check Docker Containers:**
-    ```bash
-    docker-compose ps
-    ```
-    
-    **3. Check Inter-container Communication:**
-    ```bash
-    docker exec alchemize_frontend curl http://web:8000/health
-    ```
-    
-    **4. Restart Services:**
-    ```bash
-    docker-compose restart frontend web
-    ```
-    """)
+    st.markdown("The frontend cannot connect to the backend API. Check the debug info in the sidebar.")
 
 elif not st.session_state.token:
     st.markdown("### Turn your videos into viral social media content")
@@ -554,70 +493,11 @@ else:
     with tab3:
         st.header("Settings & Information")
         
-        # Video processing info
-        with st.expander("🎬 Video Processing Capabilities", expanded=True):
-            st.markdown("""
-            **✅ Supported Video Formats:**
-            - MP4, MOV, AVI, MKV, WebM
-            - FLV, WMV, M4V, 3GP, OGV
-            - TS, MTS, M2TS (All major formats!)
-            
-            **🎤 Live Karaoke Features:**
-            - ✨ Word-by-word highlighting as spoken
-            - 🎯 Perfect timing synchronization
-            - 📱 Optimized for vertical/square videos
-            - ⚡ Hardware-accelerated processing
-            
-            **📊 Limits:**
-            - Max file size: 500MB
-            - Max duration: 60 minutes
-            - Rate limit: 5 videos per hour
-            """)
-        
-        # Content processing info  
-        with st.expander("✍️ Content Processing Capabilities"):
-            st.markdown("""
-            **📥 Input Types:**
-            - 📝 Raw text content
-            - 🔗 Article URLs (auto-scraped)
-            - 📺 YouTube URLs (transcript extracted)
-            
-            **📤 Output Platforms:**
-            - LinkedIn (professional format)
-            - Twitter (concise, thread-ready)
-            - Instagram (visual storytelling)
-            - TikTok (trend-aware)
-            - Facebook & YouTube
-            
-            **🎨 Customization:**
-            - Multiple tones and styles
-            - Platform-specific optimization
-            - Custom instructions support
-            """)
-        
-        # System info
-        with st.expander("🔧 System Information"):
+        with st.expander("🔧 System Information", expanded=True):
             st.write(f"**API URL:** {st.session_state.api_base_url}")
             st.write(f"**Logged in as:** {st.session_state.user_email}")
             st.write(f"**Connection Status:** {'🟢 Connected' if st.session_state.connection_status else '🔴 Disconnected'}")
-            
-            # Advanced debugging
-            if st.button("🔍 Advanced Debug"):
-                st.code(f"""
-# Environment Variables:
-API_BASE_URL = {os.environ.get('API_BASE_URL', 'Not Set')}
-
-# Session State:
-connection_tested = {st.session_state.connection_tested}
-connection_status = {st.session_state.connection_status}
-api_base_url = {st.session_state.api_base_url}
-
-# Health Check URL:
-{st.session_state.api_base_url.replace('/api/v1', '/health')}
-                """)
         
-        # Clear jobs
-        st.markdown("---")
         if st.button("🗑️ Clear All Job History", type="secondary"):
             st.session_state.clip_job_id = None
             st.session_state.content_job_id = None
@@ -626,4 +506,4 @@ api_base_url = {st.session_state.api_base_url}
 
 # --- Footer ---
 st.markdown("---")
-st.markdown(f"**Debug Info:** API URL: `{st.session_state.api_base_url}` | Status: {'🟢 Connected' if st.session_state.connection_status else '🔴 Disconnected'}")
+st.markdown(f"**Status:** {'🟢 Connected' if st.session_state.connection_status else '🔴 Disconnected'} | API: {st.session_state.api_base_url}")
