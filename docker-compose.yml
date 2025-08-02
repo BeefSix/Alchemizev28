@@ -54,7 +54,7 @@ services:
       target: worker
     container_name: alchemize_worker
     restart: unless-stopped
-    command: celery -A app.celery_app worker --loglevel=info  # Fixed path
+    command: celery -A app.celery_app worker --loglevel=info
     env_file: .env
     volumes:
       - ./app:/app/app
@@ -62,7 +62,6 @@ services:
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
-    # GPU support - optional, will be ignored if no GPU available
     deploy:
       resources:
         reservations:
@@ -70,10 +69,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    # Make GPU optional
     profiles:
       - gpu
-    # Alternative worker without GPU
   
   worker-cpu:
     build:
@@ -98,7 +95,7 @@ services:
       target: beat
     container_name: alchemize_beat
     restart: unless-stopped
-    command: celery -A app.celery_app beat --loglevel=info  # Fixed path
+    command: celery -A app.celery_app beat --loglevel=info
     env_file: .env
     volumes:
       - ./app:/app/app
@@ -132,7 +129,7 @@ services:
       resources:
         reservations:
           devices:
-            - capabilities: [gpu]        # Compose v3.8 syntax
+            - capabilities: [gpu]
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
     volumes:
@@ -141,7 +138,6 @@ services:
     depends_on:
       - redis
       - db
-
 
 volumes:
   alchemize_postgres_data:

@@ -457,13 +457,18 @@ else:
             st.write(f"**Logged in as:** {st.session_state.user_email}")
             
             # Test API connection
-            if st.button("Test API Connection"):
-                response = make_api_request("GET", "/health")
-                if response and response.status_code == 200:
-                    st.success("✅ API connection successful!")
-                    st.json(response.json())
-                else:
-                    st.error("❌ API connection failed!")
+if st.button("Test API Connection"):
+    # Test the health endpoint (without /api/v1 prefix)
+    try:
+        health_url = st.session_state.api_base_url.replace("/api/v1", "/health")
+        response = requests.get(health_url, timeout=5)
+        if response and response.status_code == 200:
+            st.success("✅ API connection successful!")
+            st.json(response.json())
+        else:
+            st.error("❌ API connection failed!")
+    except Exception as e:
+        st.error(f"❌ Connection error: {e}")
         
         # Clear jobs
         st.markdown("---")
