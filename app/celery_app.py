@@ -1,17 +1,16 @@
 # app/celery_app.py
 from celery import Celery
-from app.core.config import settings # Assuming you have app.core.config
+from app.core.config import settings
 
 # Initialize Celery app
-# Use environment variables for broker URL in production
 celery_app = Celery(
-    "alchemize_worker", # Name of your Celery app
+    "alchemize_worker",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=['app.workers.tasks'] # Tell Celery where to find your tasks
+    include=['app.workers.tasks']  # Fixed path
 )
 
-# Optional: Celery configuration for timezone, etc.
+# Configure Celery
 celery_app.conf.update(
     task_track_started=True,
     task_serializer='json',
@@ -19,9 +18,10 @@ celery_app.conf.update(
     accept_content=['json'],
     timezone='UTC',
     enable_utc=True,
-    broker_connection_retry_on_startup=True, # Important for Docker/startup
-    result_expires=3600, # Results expire after 1 hour
+    broker_connection_retry_on_startup=True,
+    result_expires=3600,
+    # Worker settings
+    worker_prefetch_multiplier=1,
+    task_acks_late=True,
+    worker_max_tasks_per_child=1000,
 )
-
-# Autodiscover tasks if you have multiple task modules
-# celery_app.autodiscover_tasks(['app.workers'])

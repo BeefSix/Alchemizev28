@@ -2,8 +2,9 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from app.db.base import Base # <-- ADDED THIS IMPORT
+from app.db.base import Base
 from pydantic import BaseModel as PydanticBaseModel
+from typing import Optional, Dict, Any, List
 
 # Pydantic models (Schemas) for API validation
 class BaseModel(PydanticBaseModel):
@@ -14,40 +15,45 @@ class UserBase(BaseModel):
     email: str
     full_name: str | None = None
 
-# Pydantic model for common job responses
 class JobResponse(BaseModel):
     job_id: str
     message: str
 
+class JobStatusResponse(BaseModel):
+    id: str
+    status: str
+    progress_details: Optional[Dict[str, Any]] = None
+    results: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+
 # SQLAlchemy models (Database Tables)
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True) # Assuming INTEGER ID
+    id = Column(Integer, primary_key=True, index=True)
     full_name = Column(String, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
     jobs = relationship("Job", back_populates="owner")
-    brand_profile = relationship("BrandProfile", back_populates="user", uselist=False) # One-to-one
+    brand_profile = relationship("BrandProfile", back_populates="user", uselist=False)
     usage_logs = relationship("UsageLog", back_populates="user")
 
 class Job(Base):
     __tablename__ = "jobs"
-    id = Column(String, primary_key=True, index=True) # Job ID is a UUID string
+    id = Column(String, primary_key=True, index=True)  # Job ID is a UUID string
     job_type = Column(String, index=True)
     status = Column(String, index=True, default="PENDING")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    user_id = Column(Integer, ForeignKey("users.id")) # Foreign key to User.id (Integer)
-    progress_details = Column(Text, nullable=True) # JSON string
-    results = Column(Text, nullable=True) # JSON string
+    user_id = Column(Integer, ForeignKey("users.id"))
+    progress_details = Column(Text, nullable=True)  # JSON string
+    results = Column(Text, nullable=True)  # JSON string
     error_message = Column(String, nullable=True)
     owner = relationship("User", back_populates="jobs")
 
-# SQLAlchemy Models for additional tables
 class BrandProfile(Base):
     __tablename__ = "brand_profiles"
     profile_id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), unique=True) # Foreign key to User.id (Integer)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
     brand_voice = Column(Text, nullable=True)
     brand_cta = Column(Text, nullable=True)
     user = relationship("User", back_populates="brand_profile")
@@ -55,7 +61,7 @@ class BrandProfile(Base):
 class UsageLog(Base):
     __tablename__ = "usage_logs"
     log_id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id")) # Foreign key to User.id (Integer)
+    user_id = Column(Integer, ForeignKey("users.id"))
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     model = Column(String)
     operation = Column(String)
@@ -70,22 +76,7 @@ class APICache(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class TranscriptCache(Base):
-    __tablename__ = "transcripts" # Matches your old DB table name
+    __tablename__ = "transcripts"
     source_url = Column(String, primary_key=True)
-    transcript_json = Column(Text, nullable=False) # JSON string
+    transcript_json = Column(Text, nullable=False)  # JSON string
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    from pydantic import BaseModel
-from typing import Optional, Dict, Any, List
-
-# --- Add these Pydantic Models ---
-
-class JobResponse(BaseModel):
-    job_id: str
-    message: str
-
-class JobStatusResponse(BaseModel):
-    id: str
-    status: str
-    progress_details: Optional[Dict[str, Any]] = None
-    results: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None

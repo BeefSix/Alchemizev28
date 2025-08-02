@@ -6,43 +6,75 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.api.v1.api import api_router
 from app.db.base import init_db
-from app.services import video_engine # Keep this import
+from app.services import video_engine
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import os
+import logging
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Alchemize AI starting up...")
-    print("📊 Initializing database...")
-    init_db()
+    logger.info("🚀 Alchemize AI starting up...")
     
-    # --- THIS BLOCK IS REMOVED ---
-    # The Stable Diffusion model will now be loaded on-demand
-    # the first time a thumbnail generation is requested.
-    # This makes startup faster and more reliable.
+    try:
+        # Validate required settings
+        required_settings = [
+            'SECRET_KEY', 'DATABASE_URL', 'OPENAI_API_KEY', 
+            'CELERY_BROKER_URL', 'CELERY_RESULT_BACKEND'
+        ]
+        missing_settings = [s for s in required_settings if not getattr(settings, s, None)]
+        if missing_settings:
+            raise ValueError(f"Missing required settings: {missing_settings}")
+        
+        logger.info("📊 Initializing database...")
+        init_db()
+        
+        logger.info("🔧 Setting up static directories...")
+        os.makedirs(settings.STATIC_GENERATED_DIR, exist_ok=True)
+        
+        logger.info("✅ Startup complete!")
+        
+    except Exception as e:
+        logger.error(f"❌ Startup failed: {e}")
+        raise
     
     yield
-    print("🌙 Alchemize AI shutting down...")
+    
+    logger.info("🌙 Alchemize AI shutting down...")
 
 app = FastAPI(
     title=settings.APP_NAME,
+    description="Transform your videos into viral social media content",
+    version="1.0.0",
     lifespan=lifespan
 )
 
-from app.core.limiter import limiter # Import from the new file
-
+# Set up rate limiting
+from app.core.limiter import limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Mount the static files directory
+# Mount static files
 app.mount("/static", StaticFiles(directory=settings.STATIC_FILES_ROOT_DIR), name="static")
 
+# Health check endpoint
 @app.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    return {
+        "status": "healthy",
+        "app": settings.APP_NAME,
+        "version": "1.0.0"
+    }
 
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[str(origin) for origin in settings.CORS_ORIGINS],
@@ -51,8 +83,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include API routes
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+# Root endpoint
 @app.get("/")
 def read_root():
-    return {"message": f"Welcome to {settings.APP_NAME}"}
+    return {
+        "message": f"Welcome to {settings.APP_NAME}",
+        "docs": "/docs",
+        "health": "/health"
+    }

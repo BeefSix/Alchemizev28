@@ -8,7 +8,10 @@ from app.workers import tasks
 from app.core.limiter import limiter
 import uuid
 import json
+import logging
 
+# Set up logging
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 class RepurposeRequest(models.BaseModel):
@@ -21,7 +24,8 @@ class RepurposeRequest(models.BaseModel):
 @limiter.limit("20/hour")
 @router.post("/repurpose", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 def create_repurpose_job(
-    request: RepurposeRequest,
+    request: Request,
+    repurpose_data: RepurposeRequest,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
@@ -29,18 +33,36 @@ def create_repurpose_job(
     Accepts text or a URL and starts a background job to repurpose content,
     including tone, style, and additional instructions.
     """
-    job_id = str(uuid.uuid4())
-    crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="content")
+    logger.info(f"Content repurpose request from user {current_user.id} for platforms: {repurpose_data.platforms}")
     
-    tasks.run_content_repurpose_job.delay(
-        job_id=job_id,
-        user_id=current_user.id,
-        content_input=request.content,
-        platforms=request.platforms,
-        tone=request.tone,
-        style=request.style,
-        additional_instructions=request.additional_instructions
-    )
+    # Validate content
+    if not repurpose_data.content.strip():
+        raise HTTPException(status_code=400, detail="Content cannot be empty")
+    
+    # Validate platforms
+    valid_platforms = ["LinkedIn", "Twitter", "Instagram", "TikTok", "Facebook", "YouTube"]
+    invalid_platforms = [p for p in repurpose_data.platforms if p not in valid_platforms]
+    if invalid_platforms:
+        raise HTTPException(status_code=400, detail=f"Invalid platforms: {invalid_platforms}")
+    
+    job_id = str(uuid.uuid4())
+    
+    try:
+        crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="content")
+        
+        tasks.run_content_repurpose_job.delay(
+            job_id=job_id,
+            user_id=current_user.id,
+            content_input=repurpose_data.content,
+            platforms=repurpose_data.platforms,  # Fixed: was request.platforms
+            tone=repurpose_data.tone,            # Fixed: was request.tone
+            style=repurpose_data.style,          # Fixed: was request.style
+            additional_instructions=repurpose_data.additional_instructions  # Fixed: was request.additional_instructions
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to create content repurpose job: {e}")
+        raise HTTPException(status_code=500, detail="Failed to start content repurposing")
     
     return {"job_id": job_id, "message": "Content repurposing job has been accepted."}
 
@@ -49,14 +71,14 @@ class ThumbnailRequest(models.BaseModel):
 
 @router.post("/generate-thumbnail", status_code=status.HTTP_202_ACCEPTED, response_model=models.JobResponse)
 def generate_thumbnail_job(
-    request: ThumbnailRequest,
+    thumbnail_request: ThumbnailRequest,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
     """
     Starts a background job to generate a thumbnail based on a completed content job.
     """
-    content_job = crud.get_job(db, job_id=request.content_job_id)
+    content_job = crud.get_job(db, job_id=thumbnail_request.content_job_id)
     if not content_job or content_job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Content job not found.")
     if content_job.status != "COMPLETED":
@@ -73,13 +95,18 @@ def generate_thumbnail_job(
             raise HTTPException(status_code=500, detail=f"Could not retrieve content for thumbnail: {e}")
 
     job_id = str(uuid.uuid4())
-    crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="thumbnail")
     
-    tasks.generate_thumbnail_job.delay(
-        job_id=job_id,
-        user_id=current_user.id,
-        prompt_text=prompt_for_thumbnail
-    )
+    try:
+        crud.create_job(db, job_id=job_id, user_id=current_user.id, job_type="thumbnail")
+        
+        tasks.generate_thumbnail_job.delay(
+            job_id=job_id,
+            user_id=current_user.id,
+            prompt_text=prompt_for_thumbnail
+        )
+    except Exception as e:
+        logger.error(f"Failed to create thumbnail job: {e}")
+        raise HTTPException(status_code=500, detail="Failed to start thumbnail generation")
 
     return {"job_id": job_id, "message": "Thumbnail generation job accepted."}
 

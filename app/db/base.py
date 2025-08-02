@@ -1,19 +1,18 @@
-# app/db/base.py
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import QueuePool
-from app.core.config import settings
 from contextlib import contextmanager
+from app.core.config import settings
 
 # --- THIS IS THE FIX ---
 # We've added connection pooling parameters to the engine.
 engine = create_engine(
     settings.DATABASE_URL,
     poolclass=QueuePool,
-    pool_size=10,         # Number of connections to keep open in the pool
-    max_overflow=20,      # Max number of connections to allow in addition to pool_size
-    pool_pre_ping=True,   # Checks that connections are alive before use
-    pool_recycle=3600     # Recycles connections after 1 hour to prevent stale connections
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+    pool_recycle=3600
 )
 # --- END FIX ---
 
@@ -33,6 +32,7 @@ def get_db():
     finally:
         db.close()
 
+# This is the single, correct version of the context manager for background tasks
 @contextmanager
 def get_db_session():
     """

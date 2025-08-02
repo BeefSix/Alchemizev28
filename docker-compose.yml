@@ -42,13 +42,11 @@ services:
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
-    # --- THIS IS THE FIX ---
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
       interval: 15s
       timeout: 5s
       retries: 5
-    # --- END FIX ---
 
   worker:
     build:
@@ -56,7 +54,7 @@ services:
       target: worker
     container_name: alchemize_worker
     restart: unless-stopped
-    command: celery -A app.celery_app.celery_app worker --loglevel=info
+    command: celery -A app.celery_app worker --loglevel=info  # Fixed path
     env_file: .env
     volumes:
       - ./app:/app/app
@@ -64,10 +62,35 @@ services:
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
+    # GPU support - optional, will be ignored if no GPU available
     deploy:
       resources:
         reservations:
-          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Make GPU optional
+    profiles:
+      - gpu
+    # Alternative worker without GPU
+  
+  worker-cpu:
+    build:
+      context: .
+      target: worker
+    container_name: alchemize_worker_cpu
+    restart: unless-stopped
+    command: celery -A app.celery_app worker --loglevel=info
+    env_file: .env
+    volumes:
+      - ./app:/app/app
+      - ./data/static:/app/static
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    profiles:
+      - cpu
 
   beat:
     build:
@@ -75,7 +98,7 @@ services:
       target: beat
     container_name: alchemize_beat
     restart: unless-stopped
-    command: celery -A app.celery_app.celery_app beat --loglevel=info
+    command: celery -A app.celery_app beat --loglevel=info  # Fixed path
     env_file: .env
     volumes:
       - ./app:/app/app
@@ -98,7 +121,7 @@ services:
       - API_BASE_URL=http://web:8000/api/v1
     depends_on:
       web:
-        condition: service_healthy # This requires the web service to have a healthcheck
+        condition: service_healthy
 
 volumes:
   alchemize_postgres_data:

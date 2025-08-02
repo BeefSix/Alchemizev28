@@ -12,45 +12,34 @@ FROM python:3.10-slim AS final
 
 WORKDIR /app
 
-# =================== FINAL FIX ===================
-# Install dependencies, ADDING xz-utils (for tar) and REMOVING the basic ffmpeg
+# Install system dependencies including xz-utils for FFmpeg extraction
 RUN apt-get update && apt-get install -y \
-    libpq5 curl wget gnupg unzip ca-certificates apt-transport-https jq xz-utils \
-    fonts-dejavu-core fonts-liberation xvfb \
-    # Chrome dependencies
-    libnss3 libatk-bridge2.0-0 libdrm2 libxcomposite1 libxdamage1 libxrandr2 \
-    libgbm1 libxss1 libgtkextra-dev libgconf2-dev \
-    && apt-get remove -y ffmpeg \
-    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    libpq5 curl wget gnupg unzip ca-certificates xz-utils \
+    fonts-dejavu-core fonts-liberation \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Download, extract, and set permissions for the full-featured, static build of FFmpeg
-RUN wget https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz && \
-    tar -xf ffmpeg-git-amd64-static.tar.xz && \
-    mv ffmpeg-git-*/ffmpeg /usr/local/bin/ && \
-    mv ffmpeg-git-*/ffprobe /usr/local/bin/ && \
-    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
-    rm -rf ffmpeg-git-* ffmpeg-git-amd64-static.tar.xz
-# =================== END FIX ===================
+# Install FFmpeg (fixed - added xz-utils above)
+RUN wget -q https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz \
+    && tar -xf ffmpeg-git-amd64-static.tar.xz \
+    && mv ffmpeg-git-*/ffmpeg /usr/local/bin/ \
+    && mv ffmpeg-git-*/ffprobe /usr/local/bin/ \
+    && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe \
+    && rm -rf ffmpeg-git-* ffmpeg-git-amd64-static.tar.xz
 
-# Verify installations
+# Verify FFmpeg installation
 RUN ffmpeg -version
-RUN google-chrome --version
 
 # Create user and directories
-RUN adduser --system --group appuser
-RUN mkdir -p /app/.cache/huggingface && chown -R appuser:appuser /app/.cache/huggingface
-RUN mkdir -p /app/uploads && chown -R appuser:appuser /app/uploads
-RUN mkdir -p /app/static/generated/uploads && chown -R appuser:appuser /app/static
-RUN mkdir -p /app/static/generated/temp_downloads && chown -R appuser:appuser /app/static
+RUN adduser --system --group appuser \
+    && mkdir -p /app/.cache/huggingface /app/static/generated/uploads /app/static/generated/temp_downloads \
+    && chown -R appuser:appuser /app
 
+# Install Python packages
 COPY --from=builder /app/wheels /wheels
 COPY requirements.txt .
 RUN pip install --no-cache /wheels/*
 
+# Copy application code
 COPY . .
 RUN chown -R appuser:appuser /app
 USER appuser
@@ -58,17 +47,16 @@ USER appuser
 # Set environment variables
 ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
 ENV HF_HOME=/app/.cache/huggingface
-ENV DISPLAY=:99
 
 # --- Target Stages ---
 FROM final AS web
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM final AS worker
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1024x768x24 & celery -A app.celery_app.celery_app worker --loglevel=info"]
+CMD ["celery", "-A", "app.celery_app", "worker", "--loglevel=info"]
 
 FROM final AS beat
-CMD ["celery", "-A", "app.celery_app.celery_app", "beat", "--loglevel=info"]
+CMD ["celery", "-A", "app.celery_app", "beat", "--loglevel=info"]
 
 FROM final AS frontend
 ENV STREAMLIT_SERVER_HEADLESS=true

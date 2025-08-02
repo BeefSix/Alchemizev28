@@ -1,9 +1,13 @@
 # app/db/crud.py
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.db import models
 from app.services.auth import get_password_hash
 from datetime import datetime, date
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 # --- User CRUD ---
 def get_user_by_id(db: Session, user_id: int):
@@ -21,38 +25,41 @@ def create_user(db: Session, email: str, password: str, full_name: str | None = 
     return db_user
 
 # --- Job CRUD ---
-
-# =================== FIX START ===================
-# Updated the function to accept an optional 'progress_details' dictionary.
 def create_job(db: Session, job_id: str, user_id: int, job_type: str, progress_details: dict | None = None):
-    
-    # If progress_details are provided, serialize them to a JSON string
-    progress_details_json = json.dumps(progress_details) if progress_details else None
-    
-    db_job = models.Job(
-        id=job_id, 
-        user_id=user_id, 
-        status="PENDING", 
-        job_type=job_type,
-        progress_details=progress_details_json
-    )
-# =================== FIX END ===================
-    db.add(db_job)
-    db.commit()
-    db.refresh(db_job)
-    return db_job
+    try:
+        progress_details_json = json.dumps(progress_details) if progress_details else None
+        
+        db_job = models.Job(
+            id=job_id, 
+            user_id=user_id, 
+            status="PENDING", 
+            job_type=job_type,
+            progress_details=progress_details_json
+        )
+        db.add(db_job)
+        db.commit()
+        db.refresh(db_job)
+        return db_job
+    except Exception as e:
+        logger.error(f"Failed to create job {job_id}: {e}")
+        db.rollback()
+        raise
 
 def get_job(db: Session, job_id: str):
     job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if job:
-        # Pydantic models in the endpoints will handle the final serialization.
-        # Here we just ensure the text fields are loaded as Python objects if they exist.
+        # Parse JSON fields safely
         if job.progress_details and isinstance(job.progress_details, str):
-            try: job.progress_details = json.loads(job.progress_details)
-            except json.JSONDecodeError: job.progress_details = {"error": "Could not parse progress."}
+            try: 
+                job.progress_details = json.loads(job.progress_details)
+            except json.JSONDecodeError: 
+                job.progress_details = {"error": "Could not parse progress."}
+        
         if job.results and isinstance(job.results, str):
-            try: job.results = json.loads(job.results)
-            except json.JSONDecodeError: job.results = {"error": "Could not parse results."}
+            try: 
+                job.results = json.loads(job.results)
+            except json.JSONDecodeError: 
+                job.results = {"error": "Could not parse results."}
     return job
 
 def update_job_full_status(
@@ -63,8 +70,12 @@ def update_job_full_status(
     results: dict | None = None, 
     error_message: str | None = None
 ):
-    job = db.query(models.Job).filter(models.Job.id == job_id).first()
-    if job:
+    try:
+        job = db.query(models.Job).filter(models.Job.id == job_id).first()
+        if not job:
+            logger.warning(f"Job {job_id} not found for status update")
+            return None
+            
         if status is not None:
             job.status = status
         
@@ -79,9 +90,11 @@ def update_job_full_status(
         
         db.commit()
         db.refresh(job)
-    return job
-
-# (The rest of your CRUD functions remain the same)
+        return job
+    except Exception as e:
+        logger.error(f"Failed to update job {job_id}: {e}")
+        db.rollback()
+        raise
 
 # --- Brand Profile CRUD ---
 def get_brand_profile(db: Session, user_id: int):
@@ -106,24 +119,42 @@ def update_brand_profile(db: Session, user_id: int, brand_voice: str | None = No
 
 # --- Usage Log CRUD ---
 def track_usage(db: Session, user_id: int, model: str, operation: str, cost: float):
-    log = models.UsageLog(user_id=user_id, model=model, operation=operation, cost=cost)
-    db.add(log)
-    db.commit()
-    db.refresh(log)
-    return log
+    try:
+        log = models.UsageLog(user_id=user_id, model=model, operation=operation, cost=cost)
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        return log
+    except Exception as e:
+        logger.error(f"Failed to track usage for user {user_id}: {e}")
+        db.rollback()
+        raise
 
 def get_usage_summary(db: Session, user_id: int | None = None):
-    today = datetime.utcnow().date()
-    
-    total_cost_query = db.query(models.UsageLog.cost).filter(models.UsageLog.user_id == user_id) if user_id else db.query(models.UsageLog.cost)
-    total_cost = sum(r[0] for r in total_cost_query.all()) if total_cost_query.count() > 0 else 0
-
-    daily_cost_query = db.query(models.UsageLog.cost).filter(models.UsageLog.timestamp >= today)
-    if user_id:
-        daily_cost_query = daily_cost_query.filter(models.UsageLog.user_id == user_id)
-    daily_cost = sum(r[0] for r in daily_cost_query.all()) if daily_cost_query.count() > 0 else 0
-    
-    return {"total_cost": total_cost, "daily_cost": daily_cost}
+    """Fixed: Much more efficient query using SQL aggregation"""
+    try:
+        today = datetime.utcnow().date()
+        
+        # Use SQL aggregation instead of Python sum for efficiency
+        if user_id:
+            total_cost = db.query(func.sum(models.UsageLog.cost)).filter(
+                models.UsageLog.user_id == user_id
+            ).scalar() or 0.0
+            
+            daily_cost = db.query(func.sum(models.UsageLog.cost)).filter(
+                models.UsageLog.user_id == user_id,
+                models.UsageLog.timestamp >= today
+            ).scalar() or 0.0
+        else:
+            total_cost = db.query(func.sum(models.UsageLog.cost)).scalar() or 0.0
+            daily_cost = db.query(func.sum(models.UsageLog.cost)).filter(
+                models.UsageLog.timestamp >= today
+            ).scalar() or 0.0
+        
+        return {"total_cost": float(total_cost), "daily_cost": float(daily_cost)}
+    except Exception as e:
+        logger.error(f"Failed to get usage summary: {e}")
+        return {"total_cost": 0.0, "daily_cost": 0.0}
 
 def get_user_videos_today(db: Session, user_id: int):
     today_start = datetime.combine(date.today(), datetime.min.time())
@@ -142,14 +173,18 @@ def get_cached_response(db: Session, request_hash: str):
     return None
 
 def set_cached_response(db: Session, request_hash: str, response_text: str):
-    existing_entry = db.query(models.APICache).filter(models.APICache.request_hash == request_hash).first()
-    if existing_entry:
-        existing_entry.response_text = response_text
-        existing_entry.created_at = datetime.utcnow()
-    else:
-        new_entry = models.APICache(request_hash=request_hash, response_text=response_text, created_at=datetime.utcnow())
-        db.add(new_entry)
-    db.commit()
+    try:
+        existing_entry = db.query(models.APICache).filter(models.APICache.request_hash == request_hash).first()
+        if existing_entry:
+            existing_entry.response_text = response_text
+            existing_entry.created_at = datetime.utcnow()
+        else:
+            new_entry = models.APICache(request_hash=request_hash, response_text=response_text, created_at=datetime.utcnow())
+            db.add(new_entry)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to set cached response: {e}")
+        db.rollback()
 
 def get_cached_transcript(db: Session, source_url: str):
     transcript_entry = db.query(models.TranscriptCache).filter(models.TranscriptCache.source_url == source_url).first()
@@ -161,12 +196,16 @@ def get_cached_transcript(db: Session, source_url: str):
     return None
 
 def set_cached_transcript(db: Session, source_url: str, transcript_data: dict):
-    transcript_json = json.dumps(transcript_data)
-    existing_entry = db.query(models.TranscriptCache).filter(models.TranscriptCache.source_url == source_url).first()
-    if existing_entry:
-        existing_entry.transcript_json = transcript_json
-        existing_entry.created_at = datetime.utcnow()
-    else:
-        new_entry = models.TranscriptCache(source_url=source_url, transcript_json=transcript_json, created_at=datetime.utcnow())
-        db.add(new_entry)
-    db.commit()
+    try:
+        transcript_json = json.dumps(transcript_data)
+        existing_entry = db.query(models.TranscriptCache).filter(models.TranscriptCache.source_url == source_url).first()
+        if existing_entry:
+            existing_entry.transcript_json = transcript_json
+            existing_entry.created_at = datetime.utcnow()
+        else:
+            new_entry = models.TranscriptCache(source_url=source_url, transcript_json=transcript_json, created_at=datetime.utcnow())
+            db.add(new_entry)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to set cached transcript: {e}")
+        db.rollback()
