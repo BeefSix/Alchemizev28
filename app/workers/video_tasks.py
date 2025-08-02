@@ -106,7 +106,7 @@ def update_progress(job_id: str, description: str, percentage: int) -> None:
         )
 
 
-@celery_app.task(bind=True, name="run_videoclip_upload_job")
+@celery_app.task(bind=True, name="run_videoclip_upload_job", queue="gpu")
 def run_videoclip_upload_job(
     self,
     job_id: str,

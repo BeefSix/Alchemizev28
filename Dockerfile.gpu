@@ -1,0 +1,19 @@
+# Dockerfile.gpu  – CUDA 12.4 runtime + PyTorch 2.7
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+# ---- system packages ----
+RUN apt-get update && \
+    apt-get install -y git ffmpeg python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---- Python deps ----
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt    # torch 2.7.1 already in reqs
+
+# ---- project code ----
+COPY . .
+
+# non-root user (UID/GID 1001 matches other services)
+USER 1001:1001

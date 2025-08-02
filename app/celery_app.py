@@ -7,7 +7,10 @@ celery_app = Celery(
     "alchemize_worker",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=['app.workers.tasks']  # Fixed path
+    include=[
+        'app.workers.tasks',        # lightweight tasks
+        'app.workers.video_tasks'   # GPU video task
+    ]
 )
 
 # Configure Celery

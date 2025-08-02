@@ -123,6 +123,26 @@ services:
       web:
         condition: service_healthy
 
+  worker-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=4 -Q gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]        # Compose v3.8 syntax
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./app:/app/app
+      - ./data/static:/app/static
+    depends_on:
+      - redis
+      - db
+
+
 volumes:
   alchemize_postgres_data:
   alchemize_redis_data:
