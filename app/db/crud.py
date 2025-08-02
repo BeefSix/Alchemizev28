@@ -209,3 +209,6 @@ def set_cached_transcript(db: Session, source_url: str, transcript_data: dict):
     except Exception as e:
         logger.error(f"Failed to set cached transcript: {e}")
         db.rollback()
+def get_first_user(db: Session) -> models.User | None:
+    return db.query(models.User).first()
+       

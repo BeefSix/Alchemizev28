@@ -53,3 +53,14 @@ usage_log.json
 # Ignore user-uploaded media and generated files
 /data/static/generated/uploads/
 /data/static/generated/temp_downloads/
+# Ignore user‑uploaded media and generated files (static directory)
+/static/generated/uploads/
+/static/generated/temp_downloads/
+/tmp/alchemize/generated/
+
+# generated media
+static/generated/**
+data/static/**
+*.mkv
+*.mp4
+*.webm

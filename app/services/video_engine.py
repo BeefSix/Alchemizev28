@@ -1,4 +1,3 @@
-# app/services/video_engine.py
 import os
 import uuid
 import subprocess
@@ -14,7 +13,6 @@ logger = logging.getLogger(__name__)
 def detect_ffmpeg_capabilities():
     """Detect available FFmpeg encoders and hardware acceleration"""
     try:
-        # Check for NVIDIA hardware acceleration
         result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True)
         has_nvenc = 'h264_nvenc' in result.stdout
         has_cuda = 'cuda' in result.stdout
@@ -32,21 +30,96 @@ def detect_ffmpeg_capabilities():
                 'type': 'software'
             }
     except:
-        # Fallback to software encoding
         return {
             'hwaccel': [],
             'video_codec': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23'],
             'type': 'software'
         }
 
-# Detect capabilities once at startup
 FFMPEG_CONFIG = detect_ffmpeg_capabilities()
 logger.info(f"Using FFmpeg config: {FFMPEG_CONFIG['type']}")
 
-def create_ass_file(words_data, output_path, start_offset):
-    """Creates an ASS subtitle file with improved error handling."""
+def get_duration(video_path: str) -> float:
+    """Get video duration using ffprobe"""
+    try:
+        cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', video_path]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            return float(info['format']['duration'])
+        return 60.0  # fallback
+    except:
+        return 60.0
+
+def create_karaoke_ass_file(words_data, output_path, start_offset, clip_duration):
+    """Creates an ASS subtitle file with live karaoke-style highlighting."""
     if not words_data:
         logger.warning("No words data provided for ASS file creation")
+        return False
+        
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("""[Script Info]
+Title: Alchemize Live Captions
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial Black,44,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,45,1
+Style: Karaoke,Arial Black,44,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,45,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+""")
+            
+            # Filter words for this clip
+            clip_start = start_offset
+            clip_end = start_offset + clip_duration
+            clip_words = [word for word in words_data 
+                         if clip_start <= word.get('start', 0) <= clip_end]
+            
+            if not clip_words:
+                return False
+            
+            # Group words into phrases for karaoke effect
+            phrase_length = 4
+            
+            for i in range(0, len(clip_words), phrase_length):
+                phrase_words = clip_words[i:i + phrase_length]
+                if not phrase_words:
+                    continue
+                
+                phrase_start = phrase_words[0].get('start', 0) - start_offset
+                phrase_end = phrase_words[-1].get('end', phrase_start + 1) - start_offset
+                
+                phrase_start = max(0, min(phrase_start, clip_duration))
+                phrase_end = max(phrase_start + 0.5, min(phrase_end, clip_duration))
+                
+                # Create karaoke effect
+                karaoke_text = ""
+                for j, word in enumerate(phrase_words):
+                    word_text = word.get('word', '').upper()
+                    word_duration = max(0.3, word.get('end', 0) - word.get('start', 0))
+                    timing_ms = int(word_duration * 100)
+                    
+                    if j > 0:
+                        karaoke_text += " "
+                    karaoke_text += f"{{\\k{timing_ms}}}{word_text}"
+                
+                # Format timing
+                start_str = f"{int(phrase_start // 3600)}:{int((phrase_start % 3600) // 60):02}:{phrase_start % 60:05.2f}"
+                end_str = f"{int(phrase_end // 3600)}:{int((phrase_end % 3600) // 60):02}:{phrase_end % 60:05.2f}"
+                
+                f.write(f"Dialogue: 0,{start_str},{end_str},Karaoke,,0,0,0,karaoke,{karaoke_text}\n")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to create karaoke ASS file: {e}")
+        return False
+
+def create_simple_ass_file(words_data, output_path, start_offset, clip_duration):
+    """Creates a simple ASS subtitle file without karaoke effects as fallback."""
+    if not words_data:
         return False
         
     try:
@@ -57,64 +130,39 @@ ScriptType: v4.00+
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,36,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,2,2,10,10,40,1
+Style: Default,Arial Black,38,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,2,2,10,10,40,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """)
             
-            # Group words into phrases (3-4 words each for better readability)
+            clip_start = start_offset
+            clip_end = start_offset + clip_duration
+            clip_words = [word for word in words_data 
+                         if clip_start <= word.get('start', 0) <= clip_end]
+            
             phrase_length = 3
-            for i in range(0, len(words_data), phrase_length):
-                phrase_words = words_data[i:i + phrase_length]
+            for i in range(0, len(clip_words), phrase_length):
+                phrase_words = clip_words[i:i + phrase_length]
                 if not phrase_words:
                     continue
                 
-                phrase_text = " ".join([word.get('word', '') for word in phrase_words])
+                phrase_text = " ".join([word.get('word', '') for word in phrase_words]).upper()
                 start_time = phrase_words[0].get('start', 0) - start_offset
                 end_time = phrase_words[-1].get('end', start_time + 1) - start_offset
                 
-                # Ensure positive timing
                 start_time = max(0, start_time)
                 end_time = max(start_time + 0.5, end_time)
                 
-                # Format timing (H:MM:SS.CC)
                 start_str = f"{int(start_time // 3600)}:{int((start_time % 3600) // 60):02}:{start_time % 60:05.2f}"
                 end_str = f"{int(end_time // 3600)}:{int((end_time % 3600) // 60):02}:{end_time % 60:05.2f}"
                 
-                f.write(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{phrase_text.upper()}\n")
+                f.write(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{phrase_text}\n")
         
         return True
     except Exception as e:
-        logger.error(f"Failed to create ASS file: {e}")
+        logger.error(f"Failed to create simple ASS file: {e}")
         return False
-
-def _generate_srt_file(words_data: List[Dict], start_time: float, duration: float, clip_id: str) -> str:
-    """Generates a temporary SRT subtitle file from Whisper's word data."""
-    srt_path = os.path.join(settings.STATIC_GENERATED_DIR, f"captions_{clip_id}.srt")
-    clip_start = start_time
-    clip_end = start_time + duration
-    clip_words = [word for word in words_data if clip_start <= word.get('start', -1) <= clip_end]
-
-    with open(srt_path, 'w', encoding='utf-8') as f:
-        for i, word in enumerate(clip_words):
-            start_ts = max(0, word['start'] - clip_start)
-            end_ts = max(0, word['end'] - clip_start)
-
-            start_h, rem = divmod(start_ts, 3600)
-            start_m, rem = divmod(rem, 60)
-            start_s, start_ms = divmod(rem, 1)
-
-            end_h, rem = divmod(end_ts, 3600)
-            end_m, rem = divmod(rem, 60)
-            end_s, end_ms = divmod(rem, 1)
-
-            f.write(f"{i + 1}\n")
-            f.write(f"{int(start_h):02}:{int(start_m):02}:{int(start_s):02},{int(start_ms*1000):03} --> "
-                    f"{int(end_h):02}:{int(end_m):02}:{int(end_s):02},{int(end_ms*1000):03}\n")
-            f.write(f"{word['word'].upper()}\n\n")
-
-    return srt_path
 
 class StableDiffusionGenerator:
     """Local Stable Diffusion image generator"""
@@ -124,7 +172,6 @@ class StableDiffusionGenerator:
         self.pipe = None
     
     def _load_model(self):
-        """Load the Stable Diffusion model on first use"""
         if self.model_loaded:
             return
         
@@ -150,13 +197,11 @@ class StableDiffusionGenerator:
             self.model_loaded = False
     
     def generate_image(self, prompt: str, width: int = 1280, height: int = 720) -> str | None:
-        """Generate an image and return its URL"""
         try:
             self._load_model()
             if not self.model_loaded:
                 return None
             
-            # Generate image
             image = self.pipe(
                 prompt=f"high quality, professional, {prompt}",
                 negative_prompt="blurry, low quality, distorted, text, watermark",
@@ -166,34 +211,29 @@ class StableDiffusionGenerator:
                 guidance_scale=7.5
             ).images[0]
             
-            # Save locally first
             filename = f"thumbnail_{uuid.uuid4().hex}.png"
             local_path = os.path.join(settings.STATIC_GENERATED_DIR, filename)
             os.makedirs(settings.STATIC_GENERATED_DIR, exist_ok=True)
             image.save(local_path)
             
-            # Upload to Firebase if available
             firebase_url = firebase_utils.upload_to_storage(
                 local_path, 
                 f"thumbnails/{filename}"
             )
             
             if firebase_url:
-                # Clean up local file if upload successful
                 try:
                     os.remove(local_path)
                 except:
                     pass
                 return firebase_url
             else:
-                # Return local static URL
                 return f"/static/generated/{filename}"
                 
         except Exception as e:
             logger.error(f"❌ Image generation failed: {e}")
             return None
 
-# Global instance
 sd_generator = StableDiffusionGenerator()
 
 def process_single_clip(
@@ -204,7 +244,7 @@ def process_single_clip(
     clip_id: str,
     words_data: List[Dict]
 ) -> Dict[str, Any]:
-    """Processes a single video clip with adaptive hardware acceleration."""
+    """Process a single video clip with karaoke-style captions."""
 
     temp_clip_path, final_clip_path, ass_path = None, None, None
 
@@ -217,52 +257,85 @@ def process_single_clip(
         temp_clip_path = os.path.join(settings.STATIC_GENERATED_DIR, f"temp_{clip_id}.mp4")
         final_clip_path = os.path.join(settings.STATIC_GENERATED_DIR, f"final_{clip_id}.mp4")
 
-        # Step 1: Extract the base clip with adaptive hardware acceleration
+        logger.info(f"Processing clip {clip_id}: start={start_time}s, duration={duration}s")
+
+        # Step 1: Extract base clip
         extract_cmd = ['ffmpeg'] + FFMPEG_CONFIG['hwaccel'] + [
-            '-ss', str(start_time), '-i', source_video_path,
-            '-t', str(duration)
+            '-ss', str(start_time), 
+            '-i', source_video_path,
+            '-t', str(duration),
+            '-avoid_negative_ts', 'make_zero',
+            '-fflags', '+genpts'
         ] + FFMPEG_CONFIG['video_codec'] + [
-            '-c:a', 'aac', '-b:a', '128k', '-y', temp_clip_path
+            '-c:a', 'aac', '-b:a', '128k', 
+            '-movflags', '+faststart',
+            '-y', temp_clip_path
         ]
         
-        result = subprocess.run(extract_cmd, check=True, capture_output=True, text=True)
-        logger.debug(f"Extract command completed for {clip_id}")
+        result = subprocess.run(extract_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, extract_cmd, result.stderr)
 
         # Step 2: Prepare filters
         filter_parts = []
+        
         if aspect_ratio == '9:16':
-            filter_parts.append("scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2")
+            filter_parts.append("scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black")
         elif aspect_ratio == '1:1':
-            filter_parts.append("scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2")
+            filter_parts.append("scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black")
+        elif aspect_ratio == '16:9':
+            filter_parts.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black")
 
+        # Add karaoke captions
         if add_captions and words_data:
-            # Filter words to only include those in this specific clip
             clip_start_time = start_time
             clip_end_time = start_time + duration
-            clip_words = [word for word in words_data if clip_start_time <= word.get('start', -1) <= clip_end_time]
+            clip_words = [word for word in words_data 
+                         if clip_start_time <= word.get('start', -1) <= clip_end_time]
 
             if clip_words:
                 ass_path = os.path.join(settings.STATIC_GENERATED_DIR, f"captions_{clip_id}.ass")
-                if create_ass_file(clip_words, ass_path, start_offset=clip_start_time):
+                
+                # Try karaoke first, fallback to simple
+                caption_success = create_karaoke_ass_file(clip_words, ass_path, clip_start_time, duration)
+                if not caption_success:
+                    logger.warning(f"Karaoke captions failed for {clip_id}, trying simple captions")
+                    caption_success = create_simple_ass_file(clip_words, ass_path, clip_start_time, duration)
+                
+                if caption_success:
                     filter_parts.append(f"ass={ass_path}")
-                else:
-                    logger.warning(f"Failed to create ASS file for {clip_id}")
+                    logger.info(f"Added live karaoke captions to clip {clip_id}")
 
         # Step 3: Apply filters
         if filter_parts:
             process_cmd = ['ffmpeg'] + FFMPEG_CONFIG['hwaccel'] + [
-                '-i', temp_clip_path, '-vf', ",".join(filter_parts)
+                '-i', temp_clip_path, 
+                '-vf', ",".join(filter_parts),
+                '-avoid_negative_ts', 'make_zero'
             ] + FFMPEG_CONFIG['video_codec'] + [
-                '-c:a', 'copy', '-y', final_clip_path
+                '-c:a', 'copy', 
+                '-movflags', '+faststart',
+                '-y', final_clip_path
             ]
-            subprocess.run(process_cmd, check=True, capture_output=True, text=True)
+            
+            result = subprocess.run(process_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, process_cmd, result.stderr)
         else: 
             os.rename(temp_clip_path, final_clip_path)
             temp_clip_path = None
 
+        # Verify output
+        if not os.path.exists(final_clip_path):
+            raise FileNotFoundError(f"Output clip was not created: {final_clip_path}")
+        
+        file_size = os.path.getsize(final_clip_path)
+        if file_size < 1024:
+            raise ValueError(f"Output clip is too small ({file_size} bytes)")
+
         local_url = f"/static/generated/{os.path.basename(final_clip_path)}"
-        logger.info(f"Successfully processed clip {clip_id}")
-        return {'success': True, 'url': local_url}
+        logger.info(f"Successfully processed clip {clip_id} ({file_size} bytes)")
+        return {'success': True, 'url': local_url, 'file_size': file_size}
 
     except subprocess.CalledProcessError as e:
         error_msg = f"FFmpeg failed for {clip_id}: {e.stderr[:500] if e.stderr else 'Unknown FFmpeg error'}"
@@ -273,73 +346,10 @@ def process_single_clip(
         logger.error(error_msg)
         return {'success': False, 'error': error_msg}
     finally:
-        # Guaranteed cleanup
+        # Cleanup
         for path in [temp_clip_path, ass_path]:
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
                 except Exception as e:
                     logger.warning(f"Failed to cleanup {path}: {e}")
-
-def _extract_text_for_timeframe(words_data: List[Dict], start_time: float, end_time: float) -> str:
-    """Extract text from words data for a specific timeframe"""
-    relevant_words = [
-        word['word'] for word in words_data 
-        if start_time <= word.get('start', 0) <= end_time
-    ]
-    return ' '.join(relevant_words).strip()
-
-def generate_clip_thumbnail(video_path: str, timestamp: float, output_path: str) -> bool:
-    """Generate a thumbnail from video at specific timestamp"""
-    try:
-        cmd = [
-            'ffmpeg', '-i', video_path,
-            '-ss', str(timestamp),
-            '-vframes', '1',
-            '-q:v', '2',
-            '-y', output_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return result.returncode == 0
-    except Exception as e:
-        logger.error(f"Thumbnail generation failed: {e}")
-        return False
-
-def process_single_clip_with_preview(
-    source_video_path: str,
-    moment: Dict[str, float],
-    flags: Dict[str, Any],
-    user_id: int,
-    clip_number: str,
-    words_data: List[Dict]
-) -> Dict[str, Any]:
-    """Enhanced clip processor that also generates preview thumbnail"""
-    
-    # First, generate thumbnail
-    thumbnail_path = os.path.join(settings.STATIC_GENERATED_DIR, f"thumb_{user_id}_{clip_number}.jpg")
-    thumbnail_generated = generate_clip_thumbnail(
-        source_video_path, 
-        moment['start'] + 2,  # 2 seconds into the clip for better thumbnail
-        thumbnail_path
-    )
-    
-    # Process the video clip
-    result = process_single_clip(source_video_path, moment, flags, user_id, clip_number, words_data)
-    
-    if result['success'] and thumbnail_generated:
-        # Upload thumbnail
-        thumbnail_url = firebase_utils.upload_to_storage(
-            thumbnail_path,
-            f"thumbnails/clips/thumb_{user_id}_{clip_number}.jpg"
-        )
-        if thumbnail_url:
-            result['thumbnail_url'] = thumbnail_url
-            # Clean up local thumbnail
-            try:
-                os.remove(thumbnail_path)
-            except:
-                pass
-        else:
-            result['thumbnail_url'] = f"/static/generated/thumb_{user_id}_{clip_number}.jpg"
-    
-    return result
