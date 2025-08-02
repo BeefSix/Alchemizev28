@@ -47,9 +47,19 @@ class Settings(BaseSettings):
         'max_video_duration': 3600
     }
     
-    # Static file configuration
-    STATIC_FILES_ROOT_DIR: str = "static"
-    STATIC_GENERATED_DIR: str = os.path.join(STATIC_FILES_ROOT_DIR, "generated")
+    # Static file configuration - Environment-aware paths
+    STATIC_FILES_ROOT_DIR: str = "/app/static" if os.path.exists("/app/static") else "static"
+    
+    @property
+    def STATIC_GENERATED_DIR(self) -> str:
+        """Get the correct static generated directory path"""
+        # Check if we're in Docker container with volume mount
+        if os.path.exists("/app/data/static/generated"):
+            return "/app/data/static/generated"
+        elif os.path.exists("/app/static/generated"):
+            return "/app/static/generated"
+        else:
+            return os.path.join(self.STATIC_FILES_ROOT_DIR, "generated")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
