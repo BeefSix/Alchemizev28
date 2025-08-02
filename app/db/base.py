@@ -4,8 +4,7 @@ from sqlalchemy.pool import QueuePool
 from contextlib import contextmanager
 from app.core.config import settings
 
-# --- THIS IS THE FIX ---
-# We've added connection pooling parameters to the engine.
+# Connection pooling parameters (keep this part)
 engine = create_engine(
     settings.DATABASE_URL,
     poolclass=QueuePool,
@@ -14,7 +13,6 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_recycle=3600
 )
-# --- END FIX ---
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -23,7 +21,6 @@ Base = declarative_base()
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-# This function is the standard FastAPI dependency and is SAFE for API endpoints
 def get_db():
     """Dependency to get a DB session for each API request."""
     db = SessionLocal()
@@ -32,19 +29,16 @@ def get_db():
     finally:
         db.close()
 
-# This is the single, correct version of the context manager for background tasks
 @contextmanager
 def get_db_session():
-    """
-    Provides a database session for background tasks, ensuring it's
-    always closed properly.
-    """
+    """Fixed version - only commit on success"""
     db = SessionLocal()
     try:
         yield db
-        db.commit()
     except Exception:
         db.rollback()
         raise
+    else:
+        db.commit()  # Only commit if no exception
     finally:
         db.close()

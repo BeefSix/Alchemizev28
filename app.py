@@ -189,7 +189,7 @@ def display_video_results(job_data):
             for j, url in enumerate(all_clips[i:i+3]):
                 with cols[j]:
                     # Build full URL
-                    if url.startswith("/static/"):
+                    if url.startswith("/static/") or url.startswith("/data/"):
                         full_url = f"http://localhost:8000{url}"
                     else:
                         full_url = url

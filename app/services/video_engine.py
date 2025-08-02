@@ -333,7 +333,7 @@ def process_single_clip(
         if file_size < 1024:
             raise ValueError(f"Output clip is too small ({file_size} bytes)")
 
-        local_url = f"/static/generated/{os.path.basename(final_clip_path)}"
+        local_url = f"/data/static/generated/{os.path.basename(final_clip_path)}"
         logger.info(f"Successfully processed clip {clip_id} ({file_size} bytes)")
         return {'success': True, 'url': local_url, 'file_size': file_size}
 

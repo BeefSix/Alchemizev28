@@ -34,9 +34,11 @@ services:
     restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file: .env
+    user: "0:0"  # Run as root to fix permissions
     volumes:
       - ./app:/app/app
-      - ./data/static:/app/static
+      - ./data:/app/data
+      - ./static:/app/static
     ports:
       - "8000:8000"
     depends_on:
@@ -56,11 +58,13 @@ services:
       target: worker
     container_name: alchemize_worker
     restart: unless-stopped
-    command: celery -A app.celery_app worker --loglevel=info
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=2
     env_file: .env
+    user: "0:0"  # Run as root to fix permissions
     volumes:
       - ./app:/app/app
-      - ./data/static:/app/static
+      - ./data:/app/data
+      - ./static:/app/static
     depends_on:
       db:
         condition: service_healthy
@@ -82,11 +86,13 @@ services:
       target: worker
     container_name: alchemize_worker_cpu
     restart: unless-stopped
-    command: celery -A app.celery_app worker --loglevel=info
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=1
     env_file: .env
+    user: "0:0"  # Run as root to fix permissions
     volumes:
       - ./app:/app/app
-      - ./data/static:/app/static
+      - ./data:/app/data
+      - ./static:/app/static
     depends_on:
       db:
         condition: service_healthy

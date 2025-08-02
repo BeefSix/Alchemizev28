@@ -65,11 +65,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Mount static files
 app.mount("/static", StaticFiles(directory=settings.STATIC_FILES_ROOT_DIR), name="static")
 
-# ADDITIONAL MOUNT: Serve the data/static directory where clips are actually stored
-# This fixes the issue where clips are created in /app/data/static but served from /app/static
-if os.path.exists("/app/data/static"):
-    app.mount("/data/static", StaticFiles(directory="/app/data/static"), name="data_static")
-    logger.info("📁 Mounted /data/static for serving generated clips")
+# Mount data directory where clips are actually saved
+data_generated_dir = "/app/data/static/generated"
+if os.path.exists(data_generated_dir):
+    app.mount("/data/static/generated", StaticFiles(directory=data_generated_dir), name="data_generated")
+    logger.info(f"📁 Mounted {data_generated_dir} at /data/static/generated")
+else:
+    logger.error(f"❌ Directory not found: {data_generated_dir}")
 
 # Health check endpoint
 @app.get("/health")
