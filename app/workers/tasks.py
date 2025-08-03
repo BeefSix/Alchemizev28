@@ -1,4 +1,3 @@
-# app/workers/tasks.py
 import subprocess
 import os
 import json
@@ -23,79 +22,120 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
         logger.info(f"🎬 Starting video job {job_id} for user {user_id}")
         logger.info(f"📋 Parameters: add_captions={add_captions}, aspect_ratio={aspect_ratio}")
         
-        # Verify video file exists
+        # STEP 1: Enhanced file validation
         if not os.path.exists(video_path):
             raise ValueError(f"Video file not found: {video_path}")
+        
+        file_size = os.path.getsize(video_path)
+        if file_size < 1024:  # Less than 1KB
+            raise ValueError(f"Video file too small: {file_size} bytes")
+        
+        logger.info(f"📹 Video file: {video_path} ({file_size:,} bytes)")
         
         # Update initial status
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Processing video file...", "percentage": 10})
+                progress_details={"description": "Validating video file...", "percentage": 5})
 
-        # Get video info using ffprobe
+        # STEP 2: Enhanced video info extraction with better error handling
         info_cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', video_path]
-        result = subprocess.run(info_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise ValueError(f"Invalid video file: {result.stderr}")
+        logger.info(f"🔍 Running: {' '.join(info_cmd)}")
         
-        video_info = json.loads(result.stdout)
-        duration = float(video_info['format']['duration'])
-        logger.info(f"📹 Video duration: {duration:.1f} seconds")
+        result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.error(f"❌ ffprobe failed: {result.stderr}")
+            raise ValueError(f"Invalid video file - ffprobe error: {result.stderr}")
+        
+        try:
+            video_info = json.loads(result.stdout)
+            duration = float(video_info['format']['duration'])
+            logger.info(f"📹 Video duration: {duration:.1f} seconds")
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.error(f"❌ Failed to parse video info: {e}")
+            raise ValueError(f"Could not read video metadata: {e}")
 
-        # Extract audio for transcription if captions are needed
+        # STEP 3: Enhanced audio extraction and transcription
         words_data = []
         captions_actually_added = False
         
         if add_captions:
-            logger.info(f"🎤 Captions requested: {add_captions}")
-            audio_path = os.path.join(os.path.dirname(video_path), f"{job_id}_audio.mp3")
+            logger.info(f"🎤 Starting caption processing...")
             
-            with get_db_session() as db:
-                crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                    progress_details={"description": "Extracting audio for live captions...", "percentage": 20})
-            
-            extract_cmd = [
-                'ffmpeg', '-i', video_path, 
-                '-vn', '-acodec', 'mp3', '-ar', '16000', '-ac', '1',
-                '-y', audio_path
-            ]
-            
-            logger.info(f"🔧 Extracting audio: {' '.join(extract_cmd)}")
-            result = subprocess.run(extract_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.error(f"❌ Audio extraction failed: {result.stderr}")
+            # Verify OpenAI client is available
+            if not utils.client:
+                logger.error("❌ OpenAI client not configured - check OPENAI_API_KEY")
                 add_captions = False
             else:
-                logger.info(f"✅ Audio extracted successfully to: {audio_path}")
-                
-                # Transcribe for karaoke captions
                 with get_db_session() as db:
                     crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                        progress_details={"description": "Creating live karaoke transcript...", "percentage": 35})
+                        progress_details={"description": "Extracting audio for captions...", "percentage": 15})
                 
-                logger.info(f"🎤 Starting transcription with OpenAI Whisper...")
-                transcript_result = utils.transcribe_local_audio_file_sync(audio_path, user_id, job_id)
+                # Create audio file path
+                audio_path = os.path.join(os.path.dirname(video_path), f"{job_id}_audio.wav")
                 
-                if transcript_result and transcript_result.get('success'):
-                    words_data = transcript_result['data'].get('words', [])
-                    logger.info(f"🎉 Transcription complete: {len(words_data)} words for karaoke")
-                    captions_actually_added = True
-                else:
-                    logger.error(f"❌ Transcription failed: {transcript_result.get('error', 'Unknown error') if transcript_result else 'No response'}")
+                # Enhanced audio extraction command with better settings
+                extract_cmd = [
+                    'ffmpeg', '-y',
+                    '-i', video_path,
+                    '-vn',  # No video
+                    '-acodec', 'pcm_s16le',  # Better quality for Whisper
+                    '-ar', '16000',  # 16kHz sample rate
+                    '-ac', '1',  # Mono
+                    '-t', str(min(duration, 600)),  # Limit to 10 minutes max
+                    audio_path
+                ]
+                
+                logger.info(f"🔧 Extracting audio: {' '.join(extract_cmd)}")
+                result = subprocess.run(extract_cmd, capture_output=True, text=True, timeout=120)
+                
+                if result.returncode != 0:
+                    logger.error(f"❌ Audio extraction failed: {result.stderr}")
+                    logger.error(f"❌ Audio extraction stdout: {result.stdout}")
                     add_captions = False
+                elif not os.path.exists(audio_path):
+                    logger.error(f"❌ Audio file not created: {audio_path}")
+                    add_captions = False
+                else:
+                    audio_size = os.path.getsize(audio_path)
+                    logger.info(f"✅ Audio extracted: {audio_path} ({audio_size:,} bytes)")
+                    
+                    # ENHANCED transcription with better error handling
+                    with get_db_session() as db:
+                        crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                            progress_details={"description": "Transcribing audio with Whisper...", "percentage": 30})
+                    
+                    logger.info(f"🎤 Starting transcription...")
+                    transcript_result = utils.transcribe_local_audio_file_sync(audio_path, user_id, job_id)
+                    
+                    if transcript_result and transcript_result.get('success'):
+                        transcript_data = transcript_result.get('data', {})
+                        words_data = transcript_data.get('words', [])
+                        logger.info(f"🎉 Transcription complete: {len(words_data)} words")
+                        
+                        if len(words_data) > 0:
+                            captions_actually_added = True
+                            logger.info(f"✅ Captions will be added to clips")
+                        else:
+                            logger.warning(f"⚠️ No words in transcription")
+                            add_captions = False
+                    else:
+                        error_msg = transcript_result.get('error', 'Unknown transcription error') if transcript_result else 'No transcription response'
+                        logger.error(f"❌ Transcription failed: {error_msg}")
+                        add_captions = False
         else:
             logger.info(f"🚫 Captions disabled by user")
 
-        # Generate clips from different parts of the video
+        # STEP 4: Generate clips with enhanced progress tracking
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Creating clips with live karaoke captions...", "percentage": 50})
+                progress_details={"description": "Creating video clips...", "percentage": 50})
 
         # Calculate clip parameters
-        clip_duration = min(60, duration * 0.6)  # Max 60 seconds or 60% of video
-        num_clips = min(5, max(1, int(duration // 25)))  # 1 clip per 25 seconds, max 5
+        clip_duration = min(60, max(15, duration * 0.4))  # 15-60 seconds
+        num_clips = min(5, max(1, int(duration // 30)))  # 1 clip per 30 seconds, max 5
         
         logger.info(f"📊 Will create {num_clips} clips of {clip_duration:.1f}s each")
+        logger.info(f"🎤 Captions enabled: {add_captions}, Words available: {len(words_data)}")
         
         clips_created = []
         
@@ -116,13 +156,11 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
             with get_db_session() as db:
                 crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
                     progress_details={
-                        "description": f"Creating clip {i+1}/{num_clips} with karaoke captions...", 
+                        "description": f"Creating clip {i+1}/{num_clips}...", 
                         "percentage": progress
                     })
 
-            # Process clip with karaoke captions
             logger.info(f"🎬 Processing clip {i+1}: {start_time:.1f}s - {start_time + clip_duration:.1f}s")
-            logger.info(f"🎤 Captions for this clip: {add_captions}, Words available: {len(words_data)}")
             
             clip_result = video_engine.process_single_clip(
                 video_path, 
@@ -138,55 +176,67 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
                 logger.info(f"✅ Clip {i+1} created: {clip_result['url']}")
                 logger.info(f"🎤 Clip {i+1} captions: {clip_result.get('captions_added', False)}")
             else:
-                logger.warning(f"❌ Clip {i+1} failed: {clip_result.get('error', 'Unknown error')}")
+                logger.error(f"❌ Clip {i+1} failed: {clip_result.get('error', 'Unknown error')}")
 
         if not clips_created:
             raise ValueError("No clips were successfully generated")
 
-        # Create results - FIXED structure for frontend
+        # STEP 5: Create final results with proper structure
         results = {
             "clips_by_platform": {
-                "all_platforms": clips_created  # Use the correct key name that frontend expects
+                "all": clips_created,  # FIXED: Use "all" key that frontend expects
+                "all_platforms": clips_created,  # Also keep this for compatibility
+                "TikTok": clips_created,
+                "Instagram": clips_created,
+                "YouTube": clips_created
             },
             "total_clips": len(clips_created),
             "video_duration": duration,
-            "captions_added": captions_actually_added,  # Use the actual status
+            "captions_added": captions_actually_added,
             "processing_details": {
                 "aspect_ratio": aspect_ratio,
                 "clip_duration": clip_duration,
                 "karaoke_words": len(words_data),
-                "caption_type": "live_karaoke" if captions_actually_added else "none"
+                "caption_type": "live_karaoke" if captions_actually_added else "none",
+                "original_file_size": file_size,
+                "audio_extracted": audio_path is not None and os.path.exists(audio_path) if audio_path else False
             }
         }
 
-        logger.info(f"📋 Final results: {json.dumps(results, indent=2)}")
+        logger.info(f"📋 Final results: total_clips={len(clips_created)}, captions={captions_actually_added}")
 
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "COMPLETED", 
                 progress_details={
-                    "description": f"🎉 Generated {len(clips_created)} clips with {'live karaoke captions' if captions_actually_added else 'no captions'}!", 
+                    "description": f"🎉 Generated {len(clips_created)} clips" + (f" with live karaoke captions!" if captions_actually_added else "!"), 
                     "percentage": 100
                 },
                 results=results)
 
-        logger.info(f"🎉 Video job {job_id} completed: {len(clips_created)} clips generated, captions: {captions_actually_added}")
+        logger.info(f"🎉 Video job {job_id} completed successfully")
 
     except Exception as e:
         error_msg = f"Video processing failed: {str(e)}"
         logger.error(f"❌ Video job {job_id} failed: {error_msg}")
+        logger.exception("Full error traceback:")
         
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "FAILED", error_message=error_msg)
         raise
         
     finally:
-        # Clean up audio file
-        if audio_path and os.path.exists(audio_path):
-            try:
-                os.remove(audio_path)
-                logger.info(f"🧹 Cleaned up: {audio_path}")
-            except Exception as e:
-                logger.warning(f"Failed to cleanup {audio_path}: {e}")
+        # Enhanced cleanup
+        cleanup_files = []
+        if audio_path:
+            cleanup_files.append(audio_path)
+        
+        for file_path in cleanup_files:
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    logger.info(f"🧹 Cleaned up: {file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup {file_path}: {e}")
 
 @celery_app.task(bind=True)
 def run_content_repurpose_job(self, job_id: str, user_id: int, content_input: str, platforms: list[str], tone: str, style: str, additional_instructions: str):
