@@ -240,7 +240,7 @@ def process_single_clip(
     source_video_path: str,
     moment: Dict[str, float],
     flags: Dict[str, Any],
-    user_id: int,
+    user_id: int,  # ADD THIS PARAMETER
     clip_id: str,
     words_data: List[Dict]
 ) -> Dict[str, Any]:
@@ -254,31 +254,34 @@ def process_single_clip(
         aspect_ratio = flags.get('aspect_ratio', '9:16')
         add_captions = flags.get('add_captions', True)
 
+        # Use job-specific filenames to avoid conflicts
         temp_clip_path = os.path.join(settings.STATIC_GENERATED_DIR, f"temp_{clip_id}.mp4")
         final_clip_path = os.path.join(settings.STATIC_GENERATED_DIR, f"final_{clip_id}.mp4")
 
-        logger.info(f"Processing clip {clip_id}: start={start_time}s, duration={duration}s")
+        logger.info(f"🎬 Processing clip {clip_id}: start={start_time:.1f}s, duration={duration:.1f}s, captions={add_captions}")
 
-        # Step 1: Extract base clip
-        extract_cmd = ['ffmpeg'] + FFMPEG_CONFIG['hwaccel'] + [
-            '-ss', str(start_time), 
+        # Step 1: Extract base clip with better seeking
+        extract_cmd = [
+            'ffmpeg', '-y',
+            '-ss', str(start_time),  # Seek before input for better accuracy
             '-i', source_video_path,
             '-t', str(duration),
+            '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k',
             '-avoid_negative_ts', 'make_zero',
-            '-fflags', '+genpts'
-        ] + FFMPEG_CONFIG['video_codec'] + [
-            '-c:a', 'aac', '-b:a', '128k', 
             '-movflags', '+faststart',
-            '-y', temp_clip_path
+            temp_clip_path
         ]
         
+        logger.info(f"🔧 Extracting clip: {' '.join(extract_cmd)}")
         result = subprocess.run(extract_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, extract_cmd, result.stderr)
 
-        # Step 2: Prepare filters
+        # Step 2: Apply scaling and captions
         filter_parts = []
         
+        # Add scaling based on aspect ratio
         if aspect_ratio == '9:16':
             filter_parts.append("scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black")
         elif aspect_ratio == '1:1':
@@ -286,70 +289,167 @@ def process_single_clip(
         elif aspect_ratio == '16:9':
             filter_parts.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black")
 
-        # Add karaoke captions
+        # Add karaoke captions if available
+        caption_added = False
         if add_captions and words_data:
-            clip_start_time = start_time
-            clip_end_time = start_time + duration
-            clip_words = [word for word in words_data 
-                         if clip_start_time <= word.get('start', -1) <= clip_end_time]
+            ass_path = os.path.join(settings.STATIC_GENERATED_DIR, f"captions_{clip_id}.ass")
+            
+            # Create improved ASS subtitle file
+            caption_success = create_improved_karaoke_ass(words_data, ass_path, start_time, duration)
+            if caption_success:
+                # Escape the path for FFmpeg
+                escaped_ass_path = ass_path.replace('\\', '\\\\').replace(':', '\\:')
+                filter_parts.append(f"ass='{escaped_ass_path}'")
+                caption_added = True
+                logger.info(f"🎤 Added karaoke captions to {clip_id}")
+            else:
+                logger.warning(f"⚠️ Failed to create captions for {clip_id}")
 
-            if clip_words:
-                ass_path = os.path.join(settings.STATIC_GENERATED_DIR, f"captions_{clip_id}.ass")
-                
-                # Try karaoke first, fallback to simple
-                caption_success = create_karaoke_ass_file(clip_words, ass_path, clip_start_time, duration)
-                if not caption_success:
-                    logger.warning(f"Karaoke captions failed for {clip_id}, trying simple captions")
-                    caption_success = create_simple_ass_file(clip_words, ass_path, clip_start_time, duration)
-                
-                if caption_success:
-                    filter_parts.append(f"ass={ass_path}")
-                    logger.info(f"Added live karaoke captions to clip {clip_id}")
-
-        # Step 3: Apply filters
+        # Step 3: Apply all filters
         if filter_parts:
-            process_cmd = ['ffmpeg'] + FFMPEG_CONFIG['hwaccel'] + [
+            process_cmd = [
+                'ffmpeg', '-y',
                 '-i', temp_clip_path, 
-                '-vf', ",".join(filter_parts),
-                '-avoid_negative_ts', 'make_zero'
-            ] + FFMPEG_CONFIG['video_codec'] + [
-                '-c:a', 'copy', 
+                '-vf', ','.join(filter_parts),
+                '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+                '-c:a', 'copy',
                 '-movflags', '+faststart',
-                '-y', final_clip_path
+                final_clip_path
             ]
             
+            logger.info(f"🎨 Applying filters: {' '.join(process_cmd)}")
             result = subprocess.run(process_cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise subprocess.CalledProcessError(result.returncode, process_cmd, result.stderr)
         else: 
+            # No filters needed, just rename
             os.rename(temp_clip_path, final_clip_path)
             temp_clip_path = None
 
-        # Verify output
+        # Verify output file was created successfully
         if not os.path.exists(final_clip_path):
             raise FileNotFoundError(f"Output clip was not created: {final_clip_path}")
         
         file_size = os.path.getsize(final_clip_path)
-        if file_size < 1024:
+        if file_size < 1024:  # Less than 1KB is suspicious
             raise ValueError(f"Output clip is too small ({file_size} bytes)")
 
-        local_url = f"/data/static/generated/{os.path.basename(final_clip_path)}"
-        logger.info(f"Successfully processed clip {clip_id} ({file_size} bytes)")
-        return {'success': True, 'url': local_url, 'file_size': file_size}
+        # Return the correct URL format that matches your static file serving
+        filename = os.path.basename(final_clip_path)
+        local_url = f"/static/generated/{filename}"
+        
+        logger.info(f"✅ Successfully created {clip_id}: {file_size:,} bytes, captions: {caption_added}")
+        
+        return {
+            'success': True, 
+            'url': local_url, 
+            'file_size': file_size,
+            'captions_added': caption_added,
+            'duration': duration
+        }
 
     except subprocess.CalledProcessError as e:
         error_msg = f"FFmpeg failed for {clip_id}: {e.stderr[:500] if e.stderr else 'Unknown FFmpeg error'}"
-        logger.error(error_msg)
+        logger.error(f"❌ {error_msg}")
         return {'success': False, 'error': error_msg}
+        
     except Exception as e:
         error_msg = f"Unexpected error processing {clip_id}: {str(e)}"
-        logger.error(error_msg)
+        logger.error(f"❌ {error_msg}")
         return {'success': False, 'error': error_msg}
+        
     finally:
-        # Cleanup
+        # Cleanup temporary files
         for path in [temp_clip_path, ass_path]:
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
+                    logger.debug(f"🧹 Cleaned up: {path}")
                 except Exception as e:
                     logger.warning(f"Failed to cleanup {path}: {e}")
+
+
+def create_improved_karaoke_ass(words_data, output_path, start_offset, clip_duration):
+    """Creates an improved ASS subtitle file with karaoke highlighting."""
+    if not words_data:
+        logger.warning("No words data provided for captions")
+        return False
+        
+    try:
+        # Filter words for this specific clip
+        clip_start = start_offset
+        clip_end = start_offset + clip_duration
+        clip_words = [
+            word for word in words_data 
+            if clip_start <= word.get('start', -1) <= clip_end
+        ]
+        
+        if not clip_words:
+            logger.warning(f"No words found in clip timeframe {clip_start:.1f}s - {clip_end:.1f}s")
+            return False
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            # Write ASS header with improved styling
+            f.write("""[Script Info]
+Title: Alchemize Live Karaoke Captions
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Karaoke,Arial Black,42,&H00FFFF00,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,50,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+""")
+            
+            # Group words into phrases for better readability
+            phrase_length = 4  # 4 words per phrase
+            
+            for i in range(0, len(clip_words), phrase_length):
+                phrase_words = clip_words[i:i + phrase_length]
+                if not phrase_words:
+                    continue
+                
+                # Calculate phrase timing relative to clip start
+                phrase_start = phrase_words[0].get('start', 0) - start_offset
+                phrase_end = phrase_words[-1].get('end', phrase_start + 2) - start_offset
+                
+                # Ensure times are within clip bounds
+                phrase_start = max(0, min(phrase_start, clip_duration))
+                phrase_end = max(phrase_start + 0.5, min(phrase_end, clip_duration))
+                
+                # Build karaoke text with timing
+                karaoke_text = ""
+                for j, word in enumerate(phrase_words):
+                    word_text = word.get('word', '').strip().upper()
+                    if not word_text:
+                        continue
+                        
+                    word_duration = max(0.3, word.get('end', 0) - word.get('start', 0))
+                    timing_centiseconds = int(word_duration * 100)
+                    
+                    if j > 0:
+                        karaoke_text += " "
+                    karaoke_text += f"{{\\k{timing_centiseconds}}}{word_text}"
+                
+                if karaoke_text:  # Only add if we have actual text
+                    # Format ASS timestamps (H:MM:SS.CC)
+                    start_str = format_ass_time(phrase_start)
+                    end_str = format_ass_time(phrase_end)
+                    
+                    f.write(f"Dialogue: 0,{start_str},{end_str},Karaoke,,0,0,0,karaoke,{karaoke_text}\n")
+        
+        logger.info(f"🎤 Created karaoke ASS file: {len(clip_words)} words in {output_path}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to create karaoke ASS file: {e}")
+        return False
+
+
+def format_ass_time(seconds):
+    """Format seconds as ASS timestamp (H:MM:SS.CC)"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours}:{minutes:02d}:{secs:05.2f}"

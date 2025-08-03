@@ -142,7 +142,7 @@ def display_video_results(job_data):
     clips_by_platform = results.get("clips_by_platform", {})
     
     if not clips_by_platform:
-        st.error("No clips were generated.")
+        st.error("❌ No clips were generated.")
         return False
     
     # Header with stats
@@ -151,68 +151,144 @@ def display_video_results(job_data):
         total_clips = results.get("total_clips", 0)
         video_duration = results.get("video_duration", 0)
         captions_added = results.get("captions_added", False)
+        processing_details = results.get("processing_details", {})
+        karaoke_words = processing_details.get("karaoke_words", 0)
         
         st.success(f"✅ Generated {total_clips} clips successfully!")
-        st.info(f"📹 Original video: {video_duration:.1f}s | 🎤 Live karaoke captions: {'Yes' if captions_added else 'No'}")
+        
+        # More detailed info
+        info_parts = [f"📹 Original: {video_duration:.1f}s"]
+        if captions_added:
+            info_parts.append(f"🎤 Live karaoke captions: ✅ ({karaoke_words} words)")
+        else:
+            info_parts.append("🎤 Captions: ❌")
+            
+        st.info(" | ".join(info_parts))
     
     with col2:
         # Download all button
         job_id = job_data.get("id")
-        if job_id:
-            response = make_api_request(
-                "GET", f"/video/jobs/{job_id}/download-all",
-                headers={"Authorization": f"Bearer {st.session_state.token}"},
-                stream=True
-            )
-            if response and response.status_code == 200:
-                st.download_button(
-                    label="📥 Download All Clips",
-                    data=response.content,
-                    file_name=f"alchemize_clips_{job_id[:8]}.zip",
-                    mime="application/zip",
-                    use_container_width=True,
-                    type="primary"
+        if job_id and st.button("📥 Download All", type="primary", use_container_width=True):
+            try:
+                response = make_api_request(
+                    "GET", f"/video/jobs/{job_id}/download-all",
+                    headers={"Authorization": f"Bearer {st.session_state.token}"}
                 )
+                if response and response.status_code == 200:
+                    st.download_button(
+                        label="📥 Download ZIP",
+                        data=response.content,
+                        file_name=f"alchemize_clips_{job_id[:8]}.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                        key=f"download_zip_{job_id}"
+                    )
+                else:
+                    st.error("Download failed")
+            except Exception as e:
+                st.error(f"Download error: {e}")
     
-    # Display clips in a grid
+    # Collect all clips from all platforms - FIXED to handle multiple keys
     all_clips = []
     for platform, urls in clips_by_platform.items():
         if isinstance(urls, list):
             all_clips.extend(urls)
+        elif isinstance(urls, str):
+            all_clips.append(urls)
     
-    if all_clips:
-        st.markdown("### 🎬 Your Generated Clips")
+    # If no clips found with standard keys, try alternative keys
+    if not all_clips:
+        # Try different possible key names
+        possible_keys = ["all", "all_platforms", "default", "clips"]
+        for key in possible_keys:
+            if key in clips_by_platform:
+                urls = clips_by_platform[key]
+                if isinstance(urls, list):
+                    all_clips.extend(urls)
+                elif isinstance(urls, str):
+                    all_clips.append(urls)
+                break
+    
+    if not all_clips:
+        st.error("❌ No valid clip URLs found")
+        # Debug info to help troubleshoot
+        with st.expander("🔧 Debug Info", expanded=True):
+            st.json({
+                "job_id": job_data.get("id"),
+                "results_structure": results,
+                "clips_by_platform_keys": list(clips_by_platform.keys()) if clips_by_platform else []
+            })
+        return False
+    
+    st.markdown("### 🎬 Your Generated Clips")
+    
+    # Display clips in a responsive grid
+    clips_per_row = 3
+    for i in range(0, len(all_clips), clips_per_row):
+        cols = st.columns(clips_per_row)
         
-        # Display clips in rows of 3
-        for i in range(0, len(all_clips), 3):
-            cols = st.columns(3)
-            for j, url in enumerate(all_clips[i:i+3]):
-                with cols[j]:
-                    # Build full URL
-                    if url.startswith("/static/") or url.startswith("/data/"):
+        for j, url in enumerate(all_clips[i:i+clips_per_row]):
+            with cols[j]:
+                try:
+                    # Build the correct URL for video display
+                    if url.startswith("/static/generated/"):
+                        # This matches your static file mounting
+                        full_url = f"http://localhost:8000{url}"
+                    elif url.startswith("/data/static/"):
+                        # Alternative path format
                         full_url = f"http://localhost:8000{url}"
                     else:
                         full_url = url
                     
-                    try:
-                        st.video(full_url)
-                        st.caption(f"🎥 Clip {i+j+1}")
-                        
-                        # Individual download button
-                        response = requests.get(full_url, stream=True)
-                        if response.status_code == 200:
-                            filename = f"clip_{i+j+1}.mp4"
-                            st.download_button(
-                                label="⬇️ Download",
-                                data=response.content,
-                                file_name=filename,
-                                mime="video/mp4",
-                                key=f"download_{i+j+1}",
-                                use_container_width=True
-                            )
-                    except Exception as e:
-                        st.error(f"Could not load clip {i+j+1}")
-                        st.text(f"URL: {full_url}")
+                    # Display video with error handling
+                    st.video(full_url)
+                    
+                    # Enhanced caption info
+                    clip_num = i + j + 1
+                    caption_info = "🎤" if captions_added else "🔇"
+                    st.caption(f"🎥 Clip {clip_num} {caption_info}")
+                    
+                    # Individual download button
+                    if st.button(f"⬇️ Download", key=f"dl_{i+j+1}", use_container_width=True):
+                        try:
+                            response = requests.get(full_url, timeout=10)
+                            if response.status_code == 200:
+                                st.download_button(
+                                    label=f"💾 Save Clip {clip_num}",
+                                    data=response.content,
+                                    file_name=f"clip_{clip_num}.mp4",
+                                    mime="video/mp4",
+                                    key=f"save_{i+j+1}"
+                                )
+                            else:
+                                st.error(f"Failed to fetch clip: {response.status_code}")
+                        except Exception as e:
+                            st.error(f"Download error: {e}")
+                            
+                except Exception as e:
+                    st.error(f"❌ Could not load clip {i+j+1}")
+                    st.code(f"URL: {url}")
+                    st.code(f"Error: {e}")
+    
+    # Success message with caption info
+    if captions_added:
+        st.success(f"🎉 All clips include live karaoke-style captions with {karaoke_words} words!")
+    else:
+        st.info("ℹ️ These clips were generated without captions.")
+    
+    # Debug info (expandable)
+    with st.expander("🔧 Debug Info", expanded=False):
+        st.json({
+            "job_id": job_data.get("id"),
+            "total_clips": len(all_clips),
+            "clip_urls": all_clips,
+            "captions_info": {
+                "enabled": captions_added,
+                "words_transcribed": karaoke_words,
+                "caption_type": processing_details.get("caption_type", "unknown")
+            },
+            "results_structure": results
+        })
     
     return True
 
@@ -303,6 +379,49 @@ def render_job_status_with_auto_refresh(job_id, job_type):
             return "retry"
     
     return None
+
+def handle_video_job_submission():
+    """
+    Callback function to handle the video upload form submission.
+    This ensures we use the latest values from the UI widgets.
+    """
+    # 1. Read values directly from session_state using their keys
+    uploaded_file = st.session_state.video_upload_file
+    add_captions_input = st.session_state.video_add_captions
+    aspect_ratio_input = st.session_state.video_aspect_ratio
+
+    if not uploaded_file:
+        st.error("Please upload a video file first.")
+        return
+
+    # 2. Process the inputs
+    add_captions_bool = add_captions_input.startswith("Yes")
+    aspect_ratio_value = aspect_ratio_input.split(" ")[0]
+
+    # 3. The rest of the submission logic (moved from the old form)
+    with st.spinner("Uploading and starting processing..."):
+        files = {'file': (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+        data = {
+            "add_captions": add_captions_bool,
+            "aspect_ratio": aspect_ratio_value,
+            "platforms": "TikTok,Instagram Reels,YouTube Shorts" # Default platforms
+        }
+        response = make_api_request(
+            "POST", "/video/upload-and-clip",
+            files=files,
+            data=data,
+            headers={"Authorization": f"Bearer {st.session_state.token}"}
+        )
+
+        if response and response.status_code == 202:
+            job_id = response.json().get('job_id')
+            st.success("✅ Upload successful! Processing started...")
+            # Use query_params to manage state across reruns
+            st.query_params["video_job"] = job_id
+            st.rerun()
+        else:
+            error_msg = response.text if response else "Unknown error"
+            st.error(f"❌ Failed to start processing: {error_msg}")
 
 # --- Main UI ---
 st.title("🧪 Alchemize - Video to Viral Content")
@@ -428,58 +547,40 @@ else:
                     st.query_params.clear()
                     st.rerun()
         else:
-            # Video upload form
+            # This form now uses keys and an on_click handler for reliability.
             with st.form("video_upload_form"):
-                uploaded_file = st.file_uploader(
+                st.file_uploader(
                     "Choose any video file", 
                     type=['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv', 'm4v', '3gp', 'ogv', 'ts', 'mts', 'm2ts'],
-                    help="✅ Supports ALL major video formats • Max size: 500MB"
+                    help="✅ Supports ALL major video formats • Max size: 500MB",
+                    key="video_upload_file"  # Key for session state
                 )
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    aspect_ratio = st.selectbox(
+                    st.selectbox(
                         "Aspect Ratio", 
                         ["9:16 (Vertical/TikTok)", "1:1 (Square/Instagram)", "16:9 (Horizontal/YouTube)"],
-                        index=0
+                        index=0,
+                        key="video_aspect_ratio"  # Key for session state
                     )
-                    aspect_ratio_value = aspect_ratio.split(" ")[0]
                 
                 with col2:
-                    add_captions = st.selectbox(
+                    st.selectbox(
                         "🎤 Live Karaoke Captions",
                         ["Yes - Add live karaoke-style captions", "No - Video only"],
-                        index=0
+                        index=0,
+                        key="video_add_captions"  # Key for session state
                     )
-                    add_captions_bool = add_captions.startswith("Yes")
                 
-                submitted = st.form_submit_button("🚀 Create Clips with Live Captions", use_container_width=True, type="primary")
+                # This button now calls the handle_video_job_submission function on click
+                st.form_submit_button(
+                    "🚀 Create Clips with Live Captions", 
+                    use_container_width=True, 
+                    type="primary",
+                    on_click=handle_video_job_submission
+                )
 
-                if submitted and uploaded_file:
-                    with st.spinner("Uploading and starting processing..."):
-                        files = {'file': (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                        data = {
-                            "add_captions": add_captions_bool,
-                            "aspect_ratio": aspect_ratio_value
-                        }
-                        response = make_api_request(
-                            "POST", "/video/upload-and-clip",
-                            files=files, 
-                            data=data,
-                            headers={"Authorization": f"Bearer {st.session_state.token}"}
-                        )
-                        if response and response.status_code == 202:
-                            job_id = response.json().get('job_id')
-                            st.success("✅ Upload successful! Processing started...")
-                            # Store job ID in URL params to persist across refreshes
-                            st.query_params["video_job"] = job_id
-                            st.rerun()
-                        else:
-                            error_msg = response.text if response else "Unknown error"
-                            st.error(f"❌ Failed to start processing: {error_msg}")
-                elif submitted:
-                    st.error("Please upload a video file first.")
-    
     # --- CONTENT SUITE TAB ---
     with tab2:
         st.header("Generate Social Media Content Suite")

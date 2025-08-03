@@ -1,4 +1,3 @@
-# app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -62,14 +61,9 @@ from app.core.limiter import limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Mount static files
-app.mount("/static", StaticFiles(directory=settings.STATIC_FILES_ROOT_DIR), name="static")
+# Mount static files from data directory only
+app.mount("/static", StaticFiles(directory="/app/data/static"), name="static")
 
-# Mount generated clips at /static/generated
-data_generated_dir = "/app/data/static/generated"
-if os.path.exists(data_generated_dir):
-    app.mount("/static/generated", StaticFiles(directory=data_generated_dir), name="generated_clips")
-    logger.info(f"📁 Mounted {data_generated_dir} at /static/generated")
 # Health check endpoint
 @app.get("/health")
 async def health_check():

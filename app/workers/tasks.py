@@ -20,7 +20,8 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
     audio_path = None
     
     try:
-        logger.info(f"Starting video job {job_id} for user {user_id} with video: {video_path}")
+        logger.info(f"🎬 Starting video job {job_id} for user {user_id}")
+        logger.info(f"📋 Parameters: add_captions={add_captions}, aspect_ratio={aspect_ratio}")
         
         # Verify video file exists
         if not os.path.exists(video_path):
@@ -31,64 +32,75 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
                 progress_details={"description": "Processing video file...", "percentage": 10})
 
-        # Get video info first
+        # Get video info using ffprobe
         info_cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', video_path]
         result = subprocess.run(info_cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise ValueError(f"Invalid video file or ffprobe failed: {result.stderr}")
+            raise ValueError(f"Invalid video file: {result.stderr}")
         
         video_info = json.loads(result.stdout)
         duration = float(video_info['format']['duration'])
-        logger.info(f"Video duration: {duration} seconds")
+        logger.info(f"📹 Video duration: {duration:.1f} seconds")
 
-        # Extract audio for transcription
-        audio_path = os.path.join(os.path.dirname(video_path), f"{job_id}_audio.mp3")
-        extract_cmd = [
-            'ffmpeg', '-i', video_path, 
-            '-vn', '-acodec', 'mp3', '-ar', '16000', '-ac', '1',
-            '-y', audio_path
-        ]
-        
-        with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Extracting audio...", "percentage": 20})
-        
-        result = subprocess.run(extract_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise ValueError(f"Audio extraction failed: {result.stderr}")
-
-        # Transcribe audio for live karaoke captions
-        transcript_result = None
+        # Extract audio for transcription if captions are needed
         words_data = []
+        captions_actually_added = False
         
         if add_captions:
+            logger.info(f"🎤 Captions requested: {add_captions}")
+            audio_path = os.path.join(os.path.dirname(video_path), f"{job_id}_audio.mp3")
+            
             with get_db_session() as db:
                 crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                    progress_details={"description": "Transcribing for live karaoke captions...", "percentage": 30})
+                    progress_details={"description": "Extracting audio for live captions...", "percentage": 20})
             
-            transcript_result = utils.transcribe_local_audio_file_sync(audio_path, user_id, job_id)
-            if transcript_result and transcript_result.get('success'):
-                words_data = transcript_result['data'].get('words', [])
-                logger.info(f"Transcription successful: {len(words_data)} words for karaoke captions")
-            else:
-                logger.warning(f"Transcription failed: {transcript_result.get('error') if transcript_result else 'Unknown error'}")
-                # Continue without captions rather than failing
+            extract_cmd = [
+                'ffmpeg', '-i', video_path, 
+                '-vn', '-acodec', 'mp3', '-ar', '16000', '-ac', '1',
+                '-y', audio_path
+            ]
+            
+            logger.info(f"🔧 Extracting audio: {' '.join(extract_cmd)}")
+            result = subprocess.run(extract_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"❌ Audio extraction failed: {result.stderr}")
                 add_captions = False
+            else:
+                logger.info(f"✅ Audio extracted successfully to: {audio_path}")
+                
+                # Transcribe for karaoke captions
+                with get_db_session() as db:
+                    crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                        progress_details={"description": "Creating live karaoke transcript...", "percentage": 35})
+                
+                logger.info(f"🎤 Starting transcription with OpenAI Whisper...")
+                transcript_result = utils.transcribe_local_audio_file_sync(audio_path, user_id, job_id)
+                
+                if transcript_result and transcript_result.get('success'):
+                    words_data = transcript_result['data'].get('words', [])
+                    logger.info(f"🎉 Transcription complete: {len(words_data)} words for karaoke")
+                    captions_actually_added = True
+                else:
+                    logger.error(f"❌ Transcription failed: {transcript_result.get('error', 'Unknown error') if transcript_result else 'No response'}")
+                    add_captions = False
+        else:
+            logger.info(f"🚫 Captions disabled by user")
 
-        # Create clips based on video duration
+        # Generate clips from different parts of the video
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
-                progress_details={"description": "Creating video clips with live captions...", "percentage": 50})
+                progress_details={"description": "Creating clips with live karaoke captions...", "percentage": 50})
 
-        # Generate multiple clips from different parts of the video
-        clips_created = []
-        clip_duration = min(60, duration * 0.8)  # Max 60 seconds or 80% of video
+        # Calculate clip parameters
+        clip_duration = min(60, duration * 0.6)  # Max 60 seconds or 60% of video
+        num_clips = min(5, max(1, int(duration // 25)))  # 1 clip per 25 seconds, max 5
         
-        # Create 3-5 clips from different parts
-        num_clips = min(5, max(1, int(duration // 30)))  # 1 clip per 30 seconds, max 5
+        logger.info(f"📊 Will create {num_clips} clips of {clip_duration:.1f}s each")
+        
+        clips_created = []
         
         for i in range(num_clips):
-            # Distribute clips evenly across video
+            # Distribute clips evenly across the video
             start_time = (duration / (num_clips + 1)) * (i + 1) - (clip_duration / 2)
             start_time = max(0, min(start_time, duration - clip_duration))
             
@@ -104,51 +116,67 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
             with get_db_session() as db:
                 crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
                     progress_details={
-                        "description": f"Creating clip {i+1}/{num_clips} with live karaoke captions...", 
+                        "description": f"Creating clip {i+1}/{num_clips} with karaoke captions...", 
                         "percentage": progress
                     })
 
-            # Generate clip with live karaoke captions
+            # Process clip with karaoke captions
+            logger.info(f"🎬 Processing clip {i+1}: {start_time:.1f}s - {start_time + clip_duration:.1f}s")
+            logger.info(f"🎤 Captions for this clip: {add_captions}, Words available: {len(words_data)}")
+            
             clip_result = video_engine.process_single_clip(
                 video_path, 
                 moment, 
                 {"add_captions": add_captions, "aspect_ratio": aspect_ratio},
-                user_id, 
+                user_id,
                 clip_id, 
                 words_data
             )
             
             if clip_result.get('success'):
                 clips_created.append(clip_result['url'])
-                logger.info(f"Successfully created clip {i+1} with karaoke captions: {clip_result['url']}")
+                logger.info(f"✅ Clip {i+1} created: {clip_result['url']}")
+                logger.info(f"🎤 Clip {i+1} captions: {clip_result.get('captions_added', False)}")
             else:
-                logger.warning(f"Failed to create clip {i+1}: {clip_result.get('error', 'Unknown error')}")
+                logger.warning(f"❌ Clip {i+1} failed: {clip_result.get('error', 'Unknown error')}")
 
         if not clips_created:
             raise ValueError("No clips were successfully generated")
 
-        # Mark as completed - simplified results structure
+        # Create results - FIXED structure for frontend
         results = {
             "clips_by_platform": {
-                "all_platforms": clips_created  # Simplified - no platform-specific logic
+                "all_platforms": clips_created  # Use the correct key name that frontend expects
             },
             "total_clips": len(clips_created),
             "video_duration": duration,
-            "captions_added": add_captions,
-            "caption_type": "live_karaoke" if add_captions and words_data else "none"
+            "captions_added": captions_actually_added,  # Use the actual status
+            "processing_details": {
+                "aspect_ratio": aspect_ratio,
+                "clip_duration": clip_duration,
+                "karaoke_words": len(words_data),
+                "caption_type": "live_karaoke" if captions_actually_added else "none"
+            }
         }
+
+        logger.info(f"📋 Final results: {json.dumps(results, indent=2)}")
 
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "COMPLETED", 
-                progress_details={"description": f"Generated {len(clips_created)} clips with live karaoke captions!", "percentage": 100},
+                progress_details={
+                    "description": f"🎉 Generated {len(clips_created)} clips with {'live karaoke captions' if captions_actually_added else 'no captions'}!", 
+                    "percentage": 100
+                },
                 results=results)
 
-        logger.info(f"Video job {job_id} completed successfully with {len(clips_created)} clips")
+        logger.info(f"🎉 Video job {job_id} completed: {len(clips_created)} clips generated, captions: {captions_actually_added}")
 
     except Exception as e:
-        logger.error(f"Video job {job_id} failed: {str(e)}")
+        error_msg = f"Video processing failed: {str(e)}"
+        logger.error(f"❌ Video job {job_id} failed: {error_msg}")
+        
         with get_db_session() as db:
-            crud.update_job_full_status(db, job_id, "FAILED", error_message=str(e))
+            crud.update_job_full_status(db, job_id, "FAILED", error_message=error_msg)
         raise
         
     finally:
@@ -156,9 +184,9 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
         if audio_path and os.path.exists(audio_path):
             try:
                 os.remove(audio_path)
-                logger.info(f"Cleaned up audio file: {audio_path}")
+                logger.info(f"🧹 Cleaned up: {audio_path}")
             except Exception as e:
-                logger.warning(f"Failed to clean up audio file {audio_path}: {e}")
+                logger.warning(f"Failed to cleanup {audio_path}: {e}")
 
 @celery_app.task(bind=True)
 def run_content_repurpose_job(self, job_id: str, user_id: int, content_input: str, platforms: list[str], tone: str, style: str, additional_instructions: str):
