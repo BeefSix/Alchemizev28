@@ -8,7 +8,7 @@ celery_app = Celery(
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
     include=[
-        'app.workers.tasks',        # lightweight tasks
+        'app.workers.tasks',        # All tasks are now in this single module
     ]
 )
 
@@ -22,6 +22,15 @@ celery_app.conf.update(
     enable_utc=True,
     broker_connection_retry_on_startup=True,
     result_expires=3600,
+
+    # --- THIS IS THE FIX ---
+    # Keep the connection to Redis alive by sending a heartbeat every 30 seconds.
+    # This prevents the "Connection closed by server" error when the worker is idle.
+    broker_transport_options={
+        'health_check_interval': 30.0,
+    },
+    # --- END FIX ---
+
     # Worker settings
     worker_prefetch_multiplier=1,
     task_acks_late=True,
