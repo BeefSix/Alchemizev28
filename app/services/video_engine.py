@@ -4,373 +4,90 @@ import subprocess
 import json
 import logging
 from typing import Dict, List, Any
+from concurrent.futures import ThreadPoolExecutor
+import tempfile
 from app.core.config import settings
 from app.services import firebase_utils
-import tempfile
 
 logger = logging.getLogger(__name__)
 
-def detect_ffmpeg_capabilities():
-    """Detect available FFmpeg encoders and hardware acceleration"""
+def detect_gpu_capabilities():
+    """Detect NVIDIA GPU and optimal FFmpeg settings for your 4080 Super"""
     try:
-        result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True)
-        has_nvenc = 'h264_nvenc' in result.stdout
-        has_cuda = 'cuda' in result.stdout
+        # Check for NVIDIA GPU - handle case where nvidia-smi doesn't exist
+        try:
+            nvidia_result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=5)
+            has_nvidia = nvidia_result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            logger.info("ℹ️ nvidia-smi not found - GPU detection skipped")
+            has_nvidia = False
         
-        if has_nvenc and has_cuda:
-            return {
-                'hwaccel': ['-hwaccel', 'cuda'],
-                'video_codec': ['-c:v', 'h264_nvenc', '-preset', 'p5', '-cq', '24'],
-                'type': 'nvidia'
-            }
-        else:
-            return {
-                'hwaccel': [],
-                'video_codec': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23'],
-                'type': 'software'
-            }
-    except:
+        if has_nvidia:
+            logger.info("🎮 NVIDIA GPU detected!")
+            
+            # Check GPU memory and model
+            gpu_info = nvidia_result.stdout
+            if "RTX 40" in gpu_info or "4080" in gpu_info:
+                logger.info("🚀 RTX 4080 Super detected - using optimal settings!")
+                return {
+                    'hwaccel': ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'],
+                    'video_codec': ['-c:v', 'h264_nvenc', '-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-cq', '19', '-b:v', '0'],
+                    'scale_filter': 'scale_npp',  # GPU scaling
+                    'type': 'rtx_4080_optimized',
+                    'parallel_encode': True
+                }
+            else:
+                logger.info("🎮 NVIDIA GPU found - using standard GPU acceleration")
+                return {
+                    'hwaccel': ['-hwaccel', 'cuda'],
+                    'video_codec': ['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23'],
+                    'scale_filter': 'scale_npp',
+                    'type': 'nvidia_standard',
+                    'parallel_encode': True
+                }
+        
+        # Fallback to CPU
+        logger.info("💻 Using CPU encoding (no GPU detected)")
         return {
             'hwaccel': [],
             'video_codec': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23'],
-            'type': 'software'
+            'scale_filter': 'scale',
+            'type': 'cpu_fallback',
+            'parallel_encode': False
+        }
+    except Exception as e:
+        logger.error(f"GPU detection failed: {e}")
+        return {
+            'hwaccel': [],
+            'video_codec': ['-c:v', 'libx264', '-preset', 'fast', '-crf', '25'],
+            'scale_filter': 'scale',
+            'type': 'cpu_emergency',
+            'parallel_encode': False
         }
 
-FFMPEG_CONFIG = detect_ffmpeg_capabilities()
-logger.info(f"Using FFmpeg config: {FFMPEG_CONFIG['type']}")
+# Initialize GPU configuration
+FFMPEG_CONFIG = detect_gpu_capabilities()
+logger.info(f"🔧 Video engine initialized: {FFMPEG_CONFIG['type']}")
 
 def get_duration(video_path: str) -> float:
-    """Get video duration using ffprobe"""
+    """Get video duration using ffprobe with better error handling"""
     try:
         cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', video_path]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             info = json.loads(result.stdout)
-            return float(info['format']['duration'])
-        return 60.0  # fallback
-    except:
+            duration = float(info['format']['duration'])
+            logger.info(f"📹 Video duration: {duration:.1f}s")
+            return duration
+        else:
+            logger.error(f"ffprobe failed: {result.stderr}")
+            return 60.0  # fallback
+    except Exception as e:
+        logger.error(f"Duration detection failed: {e}")
         return 60.0
 
-def create_karaoke_ass_file(words_data, output_path, start_offset, clip_duration):
-    """Creates an ASS subtitle file with live karaoke-style highlighting."""
-    if not words_data:
-        logger.warning("No words data provided for ASS file creation")
-        return False
-        
-    try:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write("""[Script Info]
-Title: Alchemize Live Captions
-ScriptType: v4.00+
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,44,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,45,1
-Style: Karaoke,Arial Black,44,&H0000FFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,45,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-""")
-            
-            # Filter words for this clip
-            clip_start = start_offset
-            clip_end = start_offset + clip_duration
-            clip_words = [word for word in words_data 
-                         if clip_start <= word.get('start', 0) <= clip_end]
-            
-            if not clip_words:
-                return False
-            
-            # Group words into phrases for karaoke effect
-            phrase_length = 4
-            
-            for i in range(0, len(clip_words), phrase_length):
-                phrase_words = clip_words[i:i + phrase_length]
-                if not phrase_words:
-                    continue
-                
-                phrase_start = phrase_words[0].get('start', 0) - start_offset
-                phrase_end = phrase_words[-1].get('end', phrase_start + 1) - start_offset
-                
-                phrase_start = max(0, min(phrase_start, clip_duration))
-                phrase_end = max(phrase_start + 0.5, min(phrase_end, clip_duration))
-                
-                # Create karaoke effect
-                karaoke_text = ""
-                for j, word in enumerate(phrase_words):
-                    word_text = word.get('word', '').upper()
-                    word_duration = max(0.3, word.get('end', 0) - word.get('start', 0))
-                    timing_ms = int(word_duration * 100)
-                    
-                    if j > 0:
-                        karaoke_text += " "
-                    karaoke_text += f"{{\\k{timing_ms}}}{word_text}"
-                
-                # Format timing
-                start_str = f"{int(phrase_start // 3600)}:{int((phrase_start % 3600) // 60):02}:{phrase_start % 60:05.2f}"
-                end_str = f"{int(phrase_end // 3600)}:{int((phrase_end % 3600) // 60):02}:{phrase_end % 60:05.2f}"
-                
-                f.write(f"Dialogue: 0,{start_str},{end_str},Karaoke,,0,0,0,karaoke,{karaoke_text}\n")
-        
-        return True
-    except Exception as e:
-        logger.error(f"Failed to create karaoke ASS file: {e}")
-        return False
-
-def create_simple_ass_file(words_data, output_path, start_offset, clip_duration):
-    """Creates a simple ASS subtitle file without karaoke effects as fallback."""
-    if not words_data:
-        return False
-        
-    try:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write("""[Script Info]
-Title: Alchemize Captions
-ScriptType: v4.00+
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,38,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,2,2,10,10,40,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-""")
-            
-            clip_start = start_offset
-            clip_end = start_offset + clip_duration
-            clip_words = [word for word in words_data 
-                         if clip_start <= word.get('start', 0) <= clip_end]
-            
-            phrase_length = 3
-            for i in range(0, len(clip_words), phrase_length):
-                phrase_words = clip_words[i:i + phrase_length]
-                if not phrase_words:
-                    continue
-                
-                phrase_text = " ".join([word.get('word', '') for word in phrase_words]).upper()
-                start_time = phrase_words[0].get('start', 0) - start_offset
-                end_time = phrase_words[-1].get('end', start_time + 1) - start_offset
-                
-                start_time = max(0, start_time)
-                end_time = max(start_time + 0.5, end_time)
-                
-                start_str = f"{int(start_time // 3600)}:{int((start_time % 3600) // 60):02}:{start_time % 60:05.2f}"
-                end_str = f"{int(end_time // 3600)}:{int((end_time % 3600) // 60):02}:{end_time % 60:05.2f}"
-                
-                f.write(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{phrase_text}\n")
-        
-        return True
-    except Exception as e:
-        logger.error(f"Failed to create simple ASS file: {e}")
-        return False
-
-class StableDiffusionGenerator:
-    """Local Stable Diffusion image generator"""
-    
-    def __init__(self):
-        self.model_loaded = False
-        self.pipe = None
-    
-    def _load_model(self):
-        if self.model_loaded:
-            return
-        
-        try:
-            from diffusers import StableDiffusionPipeline
-            import torch
-            
-            logger.info("Loading Stable Diffusion model...")
-            self.pipe = StableDiffusionPipeline.from_pretrained(
-                "runwayml/stable-diffusion-v1-5",
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                cache_dir=settings.STATIC_GENERATED_DIR
-            )
-            
-            if torch.cuda.is_available():
-                self.pipe = self.pipe.to("cuda")
-            
-            self.model_loaded = True
-            logger.info("✅ Stable Diffusion model loaded successfully")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to load Stable Diffusion model: {e}")
-            self.model_loaded = False
-    
-    def generate_image(self, prompt: str, width: int = 1280, height: int = 720) -> str | None:
-        try:
-            self._load_model()
-            if not self.model_loaded:
-                return None
-            
-            image = self.pipe(
-                prompt=f"high quality, professional, {prompt}",
-                negative_prompt="blurry, low quality, distorted, text, watermark",
-                width=width,
-                height=height,
-                num_inference_steps=20,
-                guidance_scale=7.5
-            ).images[0]
-            
-            filename = f"thumbnail_{uuid.uuid4().hex}.png"
-            local_path = os.path.join(settings.STATIC_GENERATED_DIR, filename)
-            os.makedirs(settings.STATIC_GENERATED_DIR, exist_ok=True)
-            image.save(local_path)
-            
-            firebase_url = firebase_utils.upload_to_storage(
-                local_path, 
-                f"thumbnails/{filename}"
-            )
-            
-            if firebase_url:
-                try:
-                    os.remove(local_path)
-                except:
-                    pass
-                return firebase_url
-            else:
-                return f"/static/generated/{filename}"
-                
-        except Exception as e:
-            logger.error(f"❌ Image generation failed: {e}")
-            return None
-
-sd_generator = StableDiffusionGenerator()
-
-def process_single_clip(
-    source_video_path: str,
-    moment: Dict[str, float],
-    flags: Dict[str, Any],
-    user_id: int,  # ADD THIS PARAMETER
-    clip_id: str,
-    words_data: List[Dict]
-) -> Dict[str, Any]:
-    """Process a single video clip with karaoke-style captions."""
-
-    temp_clip_path, final_clip_path, ass_path = None, None, None
-
-    try:
-        start_time = moment['start']
-        duration = min(moment['duration'], 60)
-        aspect_ratio = flags.get('aspect_ratio', '9:16')
-        add_captions = flags.get('add_captions', True)
-
-        # Use job-specific filenames to avoid conflicts
-        temp_clip_path = os.path.join(settings.STATIC_GENERATED_DIR, f"temp_{clip_id}.mp4")
-        final_clip_path = os.path.join(settings.STATIC_GENERATED_DIR, f"final_{clip_id}.mp4")
-
-        logger.info(f"🎬 Processing clip {clip_id}: start={start_time:.1f}s, duration={duration:.1f}s, captions={add_captions}")
-
-        # Step 1: Extract base clip with better seeking
-        extract_cmd = [
-            'ffmpeg', '-y',
-            '-ss', str(start_time),  # Seek before input for better accuracy
-            '-i', source_video_path,
-            '-t', str(duration),
-            '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
-            '-c:a', 'aac', '-b:a', '128k',
-            '-avoid_negative_ts', 'make_zero',
-            '-movflags', '+faststart',
-            temp_clip_path
-        ]
-        
-        logger.info(f"🔧 Extracting clip: {' '.join(extract_cmd)}")
-        result = subprocess.run(extract_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, extract_cmd, result.stderr)
-
-        # Step 2: Apply scaling and captions
-        filter_parts = []
-        
-        # Add scaling based on aspect ratio
-        if aspect_ratio == '9:16':
-            filter_parts.append("scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black")
-        elif aspect_ratio == '1:1':
-            filter_parts.append("scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black")
-        elif aspect_ratio == '16:9':
-            filter_parts.append("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black")
-
-        # Add karaoke captions if available
-        caption_added = False
-        if add_captions and words_data:
-            ass_path = os.path.join(settings.STATIC_GENERATED_DIR, f"captions_{clip_id}.ass")
-            
-            # Create improved ASS subtitle file
-            caption_success = create_improved_karaoke_ass(words_data, ass_path, start_time, duration)
-            if caption_success:
-                # Escape the path for FFmpeg
-                escaped_ass_path = ass_path.replace('\\', '\\\\').replace(':', '\\:')
-                filter_parts.append(f"ass='{escaped_ass_path}'")
-                caption_added = True
-                logger.info(f"🎤 Added karaoke captions to {clip_id}")
-            else:
-                logger.warning(f"⚠️ Failed to create captions for {clip_id}")
-
-        # Step 3: Apply all filters
-        if filter_parts:
-            process_cmd = [
-                'ffmpeg', '-y',
-                '-i', temp_clip_path, 
-                '-vf', ','.join(filter_parts),
-                '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
-                '-c:a', 'copy',
-                '-movflags', '+faststart',
-                final_clip_path
-            ]
-            
-            logger.info(f"🎨 Applying filters: {' '.join(process_cmd)}")
-            result = subprocess.run(process_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise subprocess.CalledProcessError(result.returncode, process_cmd, result.stderr)
-        else: 
-            # No filters needed, just rename
-            os.rename(temp_clip_path, final_clip_path)
-            temp_clip_path = None
-
-        # Verify output file was created successfully
-        if not os.path.exists(final_clip_path):
-            raise FileNotFoundError(f"Output clip was not created: {final_clip_path}")
-        
-        file_size = os.path.getsize(final_clip_path)
-        if file_size < 1024:  # Less than 1KB is suspicious
-            raise ValueError(f"Output clip is too small ({file_size} bytes)")
-
-        # Return the correct URL format that matches your static file serving
-        filename = os.path.basename(final_clip_path)
-        local_url = f"/static/generated/{filename}"
-        
-        logger.info(f"✅ Successfully created {clip_id}: {file_size:,} bytes, captions: {caption_added}")
-        
-        return {
-            'success': True, 
-            'url': local_url, 
-            'file_size': file_size,
-            'captions_added': caption_added,
-            'duration': duration
-        }
-
-    except subprocess.CalledProcessError as e:
-        error_msg = f"FFmpeg failed for {clip_id}: {e.stderr[:500] if e.stderr else 'Unknown FFmpeg error'}"
-        logger.error(f"❌ {error_msg}")
-        return {'success': False, 'error': error_msg}
-        
-    except Exception as e:
-        error_msg = f"Unexpected error processing {clip_id}: {str(e)}"
-        logger.error(f"❌ {error_msg}")
-        return {'success': False, 'error': error_msg}
-        
-    finally:
-        # Cleanup temporary files
-        for path in [temp_clip_path, ass_path]:
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                    logger.debug(f"🧹 Cleaned up: {path}")
-                except Exception as e:
-                    logger.warning(f"Failed to cleanup {path}: {e}")
-
-
 def create_improved_karaoke_ass(words_data, output_path, start_offset, clip_duration):
-    """Creates an improved ASS subtitle file with karaoke highlighting."""
+    """Creates karaoke-style ASS subtitles optimized for your content"""
     if not words_data:
         logger.warning("No words data provided for captions")
         return False
@@ -389,28 +106,28 @@ def create_improved_karaoke_ass(words_data, output_path, start_offset, clip_dura
             return False
 
         with open(output_path, 'w', encoding='utf-8') as f:
-            # Write ASS header with improved styling
+            # High-quality ASS styling optimized for social media
             f.write("""[Script Info]
-Title: Alchemize Live Karaoke Captions
+Title: Alchemize Pro Karaoke Captions
 ScriptType: v4.00+
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Karaoke,Arial Black,42,&H00FFFF00,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,50,1
+Style: Karaoke,Arial Black,44,&H00FFFF00,&H00FF6600,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,50,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """)
             
-            # Group words into phrases for better readability
-            phrase_length = 4  # 4 words per phrase
+            # Optimized phrase grouping for better readability
+            phrase_length = 3 if len(clip_words) > 20 else 4
             
             for i in range(0, len(clip_words), phrase_length):
                 phrase_words = clip_words[i:i + phrase_length]
                 if not phrase_words:
                     continue
                 
-                # Calculate phrase timing relative to clip start
+                # Calculate timing relative to clip start
                 phrase_start = phrase_words[0].get('start', 0) - start_offset
                 phrase_end = phrase_words[-1].get('end', phrase_start + 2) - start_offset
                 
@@ -418,34 +135,31 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 phrase_start = max(0, min(phrase_start, clip_duration))
                 phrase_end = max(phrase_start + 0.5, min(phrase_end, clip_duration))
                 
-                # Build karaoke text with timing
+                # Build karaoke text with improved timing
                 karaoke_text = ""
                 for j, word in enumerate(phrase_words):
                     word_text = word.get('word', '').strip().upper()
                     if not word_text:
                         continue
                         
-                    word_duration = max(0.3, word.get('end', 0) - word.get('start', 0))
+                    word_duration = max(0.4, word.get('end', 0) - word.get('start', 0))
                     timing_centiseconds = int(word_duration * 100)
                     
                     if j > 0:
                         karaoke_text += " "
                     karaoke_text += f"{{\\k{timing_centiseconds}}}{word_text}"
                 
-                if karaoke_text:  # Only add if we have actual text
-                    # Format ASS timestamps (H:MM:SS.CC)
+                if karaoke_text:
                     start_str = format_ass_time(phrase_start)
                     end_str = format_ass_time(phrase_end)
-                    
                     f.write(f"Dialogue: 0,{start_str},{end_str},Karaoke,,0,0,0,karaoke,{karaoke_text}\n")
         
-        logger.info(f"🎤 Created karaoke ASS file: {len(clip_words)} words in {output_path}")
+        logger.info(f"🎤 Created karaoke ASS file: {len(clip_words)} words")
         return True
         
     except Exception as e:
         logger.error(f"Failed to create karaoke ASS file: {e}")
         return False
-
 
 def format_ass_time(seconds):
     """Format seconds as ASS timestamp (H:MM:SS.CC)"""
@@ -453,3 +167,259 @@ def format_ass_time(seconds):
     minutes = int((seconds % 3600) // 60)
     secs = seconds % 60
     return f"{hours}:{minutes:02d}:{secs:05.2f}"
+
+def process_single_clip_gpu(
+    source_video_path: str,
+    moment: Dict[str, float],
+    flags: Dict[str, Any],
+    user_id: int,
+    clip_id: str,
+    words_data: List[Dict]
+) -> Dict[str, Any]:
+    """GPU-optimized single clip processing for your 4080 Super"""
+
+    temp_clip_path, final_clip_path, ass_path = None, None, None
+
+    try:
+        start_time = moment['start']
+        duration = min(moment['duration'], settings.VIDEO_PROCESSING['max_clip_duration'])
+        aspect_ratio = flags.get('aspect_ratio', '9:16')
+        add_captions = flags.get('add_captions', True)
+
+        # GPU-optimized file paths
+        temp_clip_path = os.path.join(settings.STATIC_GENERATED_DIR, f"temp_{clip_id}.mp4")
+        final_clip_path = os.path.join(settings.STATIC_GENERATED_DIR, f"final_{clip_id}.mp4")
+
+        logger.info(f"🚀 GPU processing clip {clip_id}: {start_time:.1f}s, duration={duration:.1f}s")
+
+        # Build GPU-optimized FFmpeg command
+        cmd = ['ffmpeg', '-y']
+        
+        # Add GPU acceleration if available
+        if FFMPEG_CONFIG['hwaccel']:
+            cmd.extend(FFMPEG_CONFIG['hwaccel'])
+        
+        # Input with precise seeking
+        cmd.extend(['-ss', str(start_time), '-i', source_video_path, '-t', str(duration)])
+        
+        # Build filter chain
+        filters = []
+        
+        # GPU-accelerated scaling based on aspect ratio
+        scale_filter = FFMPEG_CONFIG['scale_filter']
+        if aspect_ratio == '9:16':
+            filters.append(f"{scale_filter}=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black")
+        elif aspect_ratio == '1:1':
+            filters.append(f"{scale_filter}=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black")
+        elif aspect_ratio == '16:9':
+            filters.append(f"{scale_filter}=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black")
+
+        # Add captions if requested
+        caption_added = False
+        if add_captions and words_data:
+            ass_path = os.path.join(settings.STATIC_GENERATED_DIR, f"captions_{clip_id}.ass")
+            
+            if create_improved_karaoke_ass(words_data, ass_path, start_time, duration):
+                escaped_ass_path = ass_path.replace('\\', '\\\\').replace(':', '\\:')
+                filters.append(f"ass='{escaped_ass_path}'")
+                caption_added = True
+                logger.info(f"🎤 Added GPU-accelerated captions to {clip_id}")
+
+        # Apply filters
+        if filters:
+            cmd.extend(['-vf', ','.join(filters)])
+
+        # GPU-optimized encoding settings
+        cmd.extend(FFMPEG_CONFIG['video_codec'])
+        
+        # Audio settings
+        cmd.extend(['-c:a', 'aac', '-b:a', '128k'])
+        
+        # Optimization flags
+        cmd.extend([
+            '-movflags', '+faststart',
+            '-avoid_negative_ts', 'make_zero'
+        ])
+        
+        cmd.append(final_clip_path)
+        
+        # Execute with timeout
+        logger.info(f"🔧 GPU command: {' '.join(cmd[:10])}...")  # Log first 10 elements
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            timeout=settings.VIDEO_PROCESSING['ffmpeg_timeout']
+        )
+        
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
+
+        # Verify output
+        if not os.path.exists(final_clip_path):
+            raise FileNotFoundError(f"GPU processing failed - output not created: {final_clip_path}")
+        
+        file_size = os.path.getsize(final_clip_path)
+        if file_size < 1024:
+            raise ValueError(f"Output too small ({file_size} bytes) - GPU processing may have failed")
+
+        # Return success with local URL
+        filename = os.path.basename(final_clip_path)
+        local_url = f"/static/generated/{filename}"
+        
+        logger.info(f"✅ GPU clip success {clip_id}: {file_size:,}B, captions: {caption_added}")
+        
+        return {
+            'success': True, 
+            'url': local_url, 
+            'file_size': file_size,
+            'captions_added': caption_added,
+            'duration': duration,
+            'processing_method': FFMPEG_CONFIG['type']
+        }
+
+    except subprocess.CalledProcessError as e:
+        error_msg = f"GPU FFmpeg failed for {clip_id}: {e.stderr[-500:] if e.stderr else 'Unknown error'}"
+        logger.error(f"❌ {error_msg}")
+        return {'success': False, 'error': error_msg}
+        
+    except Exception as e:
+        error_msg = f"GPU processing error {clip_id}: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        return {'success': False, 'error': error_msg}
+        
+    finally:
+        # Cleanup
+        for path in [temp_clip_path, ass_path]:
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
+def process_clips_parallel(
+    source_video_path: str,
+    moments: List[Dict],
+    flags: Dict[str, Any],
+    user_id: int,
+    job_id: str,
+    words_data: List[Dict]
+) -> List[Dict[str, Any]]:
+    """Process multiple clips in parallel using your GPU efficiently"""
+    
+    if not FFMPEG_CONFIG.get('parallel_encode', False):
+        # Fallback to sequential for CPU
+        logger.info("🔄 Using sequential processing (CPU mode)")
+        results = []
+        for i, moment in enumerate(moments):
+            clip_id = f"{job_id}_clip_{i+1}"
+            result = process_single_clip_gpu(source_video_path, moment, flags, user_id, clip_id, words_data)
+            results.append(result)
+        return results
+    
+    # Parallel GPU processing for RTX 4080
+    logger.info(f"🚀 Using parallel GPU processing for {len(moments)} clips")
+    
+    def process_clip_wrapper(args):
+        source_path, moment, flags, user_id, clip_id, words_data = args
+        return process_single_clip_gpu(source_path, moment, flags, user_id, clip_id, words_data)
+    
+    # Use 2-3 parallel workers max to avoid overwhelming GPU memory
+    max_workers = min(3, len(moments))
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        clip_args = [
+            (source_video_path, moment, flags, user_id, f"{job_id}_clip_{i+1}", words_data)
+            for i, moment in enumerate(moments)
+        ]
+        
+        results = list(executor.map(process_clip_wrapper, clip_args))
+    
+    logger.info(f"🎉 Parallel processing complete: {sum(1 for r in results if r.get('success'))} successful clips")
+    return results
+
+# Legacy function name for compatibility
+def process_single_clip(*args, **kwargs):
+    """Wrapper for backward compatibility"""
+    return process_single_clip_gpu(*args, **kwargs)
+
+class StableDiffusionGenerator:
+    """GPU-accelerated Stable Diffusion for your RTX 4080"""
+    
+    def __init__(self):
+        self.model_loaded = False
+        self.pipe = None
+    
+    def _load_model(self):
+        if self.model_loaded:
+            return
+        
+        try:
+            from diffusers import StableDiffusionPipeline
+            import torch
+            
+            logger.info("🎨 Loading Stable Diffusion on RTX 4080...")
+            
+            # Optimized for RTX 4080
+            self.pipe = StableDiffusionPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5",
+                torch_dtype=torch.float16,
+                cache_dir=settings.STATIC_GENERATED_DIR,
+                safety_checker=None,  # Disable for speed
+                requires_safety_checker=False
+            )
+            
+            if torch.cuda.is_available():
+                self.pipe = self.pipe.to("cuda")
+                # RTX 4080 optimizations
+                self.pipe.enable_attention_slicing()
+                self.pipe.enable_memory_efficient_attention()
+                logger.info("🚀 RTX 4080 optimizations enabled!")
+            
+            self.model_loaded = True
+            logger.info("✅ Stable Diffusion loaded on GPU")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load Stable Diffusion: {e}")
+            self.model_loaded = False
+    
+    def generate_image(self, prompt: str, width: int = 1280, height: int = 720) -> str | None:
+        try:
+            self._load_model()
+            if not self.model_loaded:
+                return None
+            
+            import torch
+            
+            # RTX 4080 optimized generation
+            image = self.pipe(
+                prompt=f"high quality, professional, {prompt}",
+                negative_prompt="blurry, low quality, distorted, text, watermark, ugly",
+                width=width,
+                height=height,
+                num_inference_steps=25,  # Good balance for RTX 4080
+                guidance_scale=7.5,
+                generator=torch.Generator(device="cuda").manual_seed(42)  # Consistent results
+            ).images[0]
+            
+            filename = f"thumbnail_{uuid.uuid4().hex}.png"
+            local_path = os.path.join(settings.STATIC_GENERATED_DIR, filename)
+            image.save(local_path, optimize=True, quality=85)
+            
+            # Try Firebase upload, fallback to local
+            firebase_url = firebase_utils.upload_to_storage(local_path, f"thumbnails/{filename}")
+            
+            if firebase_url:
+                try:
+                    os.remove(local_path)
+                except:
+                    pass
+                return firebase_url
+            else:
+                return f"/static/generated/{filename}"
+                
+        except Exception as e:
+            logger.error(f"❌ GPU image generation failed: {e}")
+            return None
+
+sd_generator = StableDiffusionGenerator()
