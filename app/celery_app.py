@@ -9,7 +9,6 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,
     include=[
         'app.workers.tasks',        # lightweight tasks
-        'app.workers.video_tasks'   # GPU video task
     ]
 )
 

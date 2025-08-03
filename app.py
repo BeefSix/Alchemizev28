@@ -1,4 +1,4 @@
-# app.py - FIXED VERSION with better job management
+# app.py - FIXED VERSION with auto-clearing URL parameters
 import streamlit as st
 import requests
 import time
@@ -31,9 +31,8 @@ def init_session_state():
         'api_base_url': api_base_url,
         'connection_tested': False,
         'connection_status': None,
-        # FIXED: Better job state management
-        'active_jobs': {},  # Track multiple jobs by type
-        'last_job_check': {}  # Track when we last checked each job
+        'active_jobs': {},
+        'last_job_check': {}
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -53,8 +52,15 @@ def make_api_request(method, endpoint, **kwargs):
         st.session_state.connection_tested = False
         return None
 
+def clear_job_from_url(job_type):
+    """Clear job parameter from URL and reset state"""
+    param_name = f"{job_type}_job"
+    if param_name in st.query_params:
+        st.query_params.clear()
+        st.rerun()
+
 def get_job_status(job_id, job_type="video"):
-    """Get job status from API with better error handling"""
+    """Get job status with auto-cleanup of non-existent jobs"""
     if not job_id:
         return None
     
@@ -65,15 +71,20 @@ def get_job_status(job_id, job_type="video"):
         )
         if response and response.status_code == 200:
             return response.json()
+        elif response and response.status_code == 404:
+            # Job doesn't exist - clear it from URL
+            st.warning("⚠️ Job not found. Clearing...")
+            clear_job_from_url(job_type)
+            return None
         elif response:
-            st.error(f"Failed to get job status: {response.status_code} - {response.text}")
+            st.error(f"Failed to get job status: {response.status_code}")
         return None
     except Exception as e:
         st.error(f"Error checking job status: {e}")
         return None
 
 def display_video_results(job_data):
-    """Display completed video job results properly"""
+    """Display completed video job results"""
     if not job_data or job_data.get("status") != "COMPLETED":
         return False
     
@@ -84,7 +95,7 @@ def display_video_results(job_data):
         st.error("❌ No clips were generated.")
         return False
     
-    # Header with stats (keep existing code)
+    # Header with stats
     col1, col2 = st.columns([3, 1])
     with col1:
         total_clips = results.get("total_clips", 0)
@@ -104,7 +115,7 @@ def display_video_results(job_data):
         st.info(" | ".join(info_parts))
     
     with col2:
-        # Download all button (keep existing code)
+        # Download all button
         job_id = job_data.get("id")
         if job_id and st.button("📥 Download All", type="primary", use_container_width=True):
             try:
@@ -126,10 +137,8 @@ def display_video_results(job_data):
             except Exception as e:
                 st.error(f"Download error: {e}")
     
-    # ✅ FIXED CLIP COLLECTION LOGIC
+    # Collect all clips
     all_clips = []
-    
-    # Try keys in order of preference
     possible_keys = ["all", "all_platforms", "TikTok", "Instagram", "YouTube", "default"]
     
     for key in possible_keys:
@@ -137,12 +146,11 @@ def display_video_results(job_data):
             urls = clips_by_platform[key]
             if isinstance(urls, list):
                 all_clips.extend(urls)
-                break  # Found clips, stop looking
+                break
             elif isinstance(urls, str):
                 all_clips.append(urls)
-                break  # Found clip, stop looking
+                break
     
-    # If no clips found with preferred keys, try all keys
     if not all_clips:
         for key, urls in clips_by_platform.items():
             if isinstance(urls, list):
@@ -150,7 +158,7 @@ def display_video_results(job_data):
             elif isinstance(urls, str):
                 all_clips.append(urls)
     
-    # Remove duplicates while preserving order
+    # Remove duplicates
     seen = set()
     all_clips = [x for x in all_clips if not (x in seen or seen.add(x))]
     
@@ -167,7 +175,7 @@ def display_video_results(job_data):
     
     st.markdown("### 🎬 Your Generated Clips")
     
-    # Display clips in grid (keep existing display code)
+    # Display clips in grid
     clips_per_row = 3
     for i in range(0, len(all_clips), clips_per_row):
         cols = st.columns(clips_per_row)
@@ -220,16 +228,16 @@ def display_video_results(job_data):
     return True
 
 def render_job_status_with_auto_refresh(job_id, job_type):
-    """FIXED: Better job status rendering with less aggressive refresh"""
+    """Render job status with automatic cleanup"""
     if not job_id:
         return None
     
-    # Throttle API calls - only check every 2 seconds
+    # Throttle API calls
     current_time = time.time()
     last_check_key = f"{job_type}_{job_id}"
     last_check = st.session_state.last_job_check.get(last_check_key, 0)
     
-    if current_time - last_check < 2:  # 2 second throttle
+    if current_time - last_check < 2:
         time.sleep(1)
         st.rerun()
         return None
@@ -240,9 +248,15 @@ def render_job_status_with_auto_refresh(job_id, job_type):
     job_data = get_job_status(job_id, job_type)
     
     if not job_data:
+        # Job not found or error - show retry option but don't auto-refresh
         st.warning("⚠️ Could not retrieve job status")
-        if st.button("🔄 Retry", key=f"retry_{job_id}"):
-            st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Retry", key=f"retry_{job_id}"):
+                st.rerun()
+        with col2:
+            if st.button("❌ Cancel", key=f"cancel_{job_id}"):
+                clear_job_from_url(job_type)
         return None
     
     status = job_data.get("status", "UNKNOWN")
@@ -250,9 +264,15 @@ def render_job_status_with_auto_refresh(job_id, job_type):
     percentage = progress.get("percentage", 0) if progress else 0
     description = progress.get("description", "Processing...") if progress else "Processing..."
     
-    # Status display
+    # Status display with better UX
     if status == "PENDING":
         st.info("⏳ Job is queued and waiting to start...")
+        
+        # Add cancel option for pending jobs
+        if st.button("❌ Cancel Job", key=f"cancel_pending_{job_id}"):
+            clear_job_from_url(job_type)
+            return None
+            
         time.sleep(3)
         st.rerun()
         
@@ -261,16 +281,24 @@ def render_job_status_with_auto_refresh(job_id, job_type):
         if percentage > 0:
             st.progress(percentage / 100, text=f"{percentage}% complete")
         
-        # Auto-refresh every 3 seconds for active jobs
+        # Add cancel option for in-progress jobs
+        if st.button("❌ Cancel Job", key=f"cancel_progress_{job_id}"):
+            clear_job_from_url(job_type)
+            return None
+        
         time.sleep(3)
         st.rerun()
         
     elif status == "COMPLETED":
-        # Display results based on job type
+        # Display results and add "Process Another" button
         if job_type == "video":
             display_video_results(job_data)
         elif job_type == "content":
             display_content_results(job_data)
+        
+        # Always show "Process Another" button after completion
+        if st.button(f"🎬 Process Another {job_type.title()}", key=f"another_{job_id}", use_container_width=True, type="primary"):
+            clear_job_from_url(job_type)
         
         return job_data
         
@@ -278,17 +306,21 @@ def render_job_status_with_auto_refresh(job_id, job_type):
         error_message = job_data.get('error_message', 'Unknown error')
         st.error(f"❌ Job failed: {error_message}")
         
-        # Show debug info for failed jobs
         with st.expander("🔧 Debug Info"):
             st.json(job_data)
         
-        if st.button("🔄 Try Again", key=f"retry_failed_{job_id}"):
-            return "retry"
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Try Again", key=f"retry_failed_{job_id}"):
+                clear_job_from_url(job_type)
+        with col2:
+            if st.button("❌ Clear", key=f"clear_failed_{job_id}"):
+                clear_job_from_url(job_type)
     
     return None
 
 def handle_video_job_submission():
-    """FIXED: Enhanced video job submission"""
+    """Handle video job submission"""
     uploaded_file = st.session_state.video_upload_file
     add_captions_input = st.session_state.video_add_captions
     aspect_ratio_input = st.session_state.video_aspect_ratio
@@ -317,7 +349,6 @@ def handle_video_job_submission():
         if response and response.status_code == 202:
             job_id = response.json().get('job_id')
             st.success("✅ Upload successful! Processing started...")
-            # FIXED: Better job tracking
             st.session_state.active_jobs['video'] = job_id
             st.query_params["video_job"] = job_id
             st.rerun()
@@ -325,10 +356,7 @@ def handle_video_job_submission():
             error_msg = response.text if response else "Unknown error"
             st.error(f"❌ Failed to start processing: {error_msg}")
 
-# Main UI and other functions remain the same...
-# Just continue with the rest of your app.py but use the FIXED job management
-
-# --- Main UI (keeping your existing structure but with fixes) ---
+# --- Main UI ---
 st.title("🧪 Alchemize - Video to Viral Content")
 
 # Test API connection
@@ -368,7 +396,7 @@ with col1:
     if test_api_connection():
         st.success(f"🟢 Connected to API (Using: {st.session_state.api_base_url})")
     else:
-        st.error("🔴 Cannot connect to API - Check debug info in sidebar")
+        st.error("🔴 Cannot connect to API")
 
 with col2:
     if st.button("🔄 Retry Connection"):
@@ -434,9 +462,18 @@ with st.sidebar:
     st.markdown("⚗️", help="Your AI video wizard!")
     st.title("The Alchemist's Lab")
     
+    # Add URL cleanup button for debugging
+    if st.button("🔄 Reset App State"):
+        st.query_params.clear()
+        for key in ['active_jobs', 'last_job_check']:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
+    
     with st.expander("🔧 Debug Info", expanded=False):
         st.write(f"**API URL:** {st.session_state.api_base_url}")
         st.write(f"**Connection Status:** {st.session_state.connection_status}")
+        st.write(f"**URL Params:** {dict(st.query_params)}")
     
     if st.session_state.connection_status and not st.session_state.token:
         st.markdown("### 🔐 Login / Sign Up")
@@ -472,6 +509,7 @@ with st.sidebar:
         if st.button("Logout", use_container_width=True):
             st.session_state.token = None
             st.session_state.user_email = None
+            st.query_params.clear()  # Clear any active jobs on logout
             st.rerun()
 
         st.markdown("### 📊 Your Stats")
@@ -525,25 +563,15 @@ else:
         
         if active_video_job:
             st.markdown("### 🔄 Processing Your Video...")
-            result = render_job_status_with_auto_refresh(active_video_job, "video")
-            
-            if result == "retry":
-                # Clear the job and start over
-                st.query_params.clear()
-                st.rerun()
-            elif result:
-                # Job completed successfully 
-                if st.button("🎬 Process Another Video", use_container_width=True, type="primary"):
-                    st.query_params.clear()
-                    st.rerun()
+            render_job_status_with_auto_refresh(active_video_job, "video")
         else:
-            # This form now uses keys and an on_click handler for reliability.
+            # Show upload form
             with st.form("video_upload_form"):
                 st.file_uploader(
                     "Choose any video file", 
                     type=['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv', 'm4v', '3gp', 'ogv', 'ts', 'mts', 'm2ts'],
                     help="✅ Supports ALL major video formats • Max size: 500MB",
-                    key="video_upload_file"  # Key for session state
+                    key="video_upload_file"
                 )
                 
                 col1, col2 = st.columns(2)
@@ -552,7 +580,7 @@ else:
                         "Aspect Ratio", 
                         ["9:16 (Vertical/TikTok)", "1:1 (Square/Instagram)", "16:9 (Horizontal/YouTube)"],
                         index=0,
-                        key="video_aspect_ratio"  # Key for session state
+                        key="video_aspect_ratio"
                     )
                 
                 with col2:
@@ -560,10 +588,9 @@ else:
                         "🎤 Live Karaoke Captions",
                         ["Yes - Add live karaoke-style captions", "No - Video only"],
                         index=0,
-                        key="video_add_captions"  # Key for session state
+                        key="video_add_captions"
                     )
                 
-                # This button now calls the handle_video_job_submission function on click
                 st.form_submit_button(
                     "🚀 Create Clips with Live Captions", 
                     use_container_width=True, 
@@ -581,19 +608,9 @@ else:
         
         if active_content_job:
             st.markdown("### 🔄 Generating Your Content...")
-            result = render_job_status_with_auto_refresh(active_content_job, "content")
-            
-            if result == "retry":
-                # Clear the job and start over
-                st.query_params.clear()
-                st.rerun()
-            elif result:
-                # Job completed successfully
-                if st.button("✍️ Create New Content", use_container_width=True, type="primary"):
-                    st.query_params.clear()
-                    st.rerun()
+            render_job_status_with_auto_refresh(active_content_job, "content")
         else:
-            # Content generation form
+            # Show content form
             with st.form("content_form"):
                 content_input = st.text_area(
                     "Enter content or URL", 
@@ -632,7 +649,6 @@ else:
                         if response and response.status_code == 202:
                             job_id = response.json().get('job_id')
                             st.success("Content generation started!")
-                            # Store job ID in URL params to persist across refreshes
                             st.query_params["content_job"] = job_id
                             st.rerun()
                         else:
