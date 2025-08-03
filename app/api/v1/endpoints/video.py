@@ -89,7 +89,13 @@ async def create_videoclip_job_upload(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
-    """Upload ANY video file and create clips with live karaoke-style captions."""
+    """Upload a video for clipping with karaoke-style captions.
+
+    Only the following video MIME types are accepted: video/mp4, video/quicktime,
+    video/x-msvideo, video/x-matroska, video/webm, video/avi, video/x-ms-wmv,
+    video/3gpp, and video/x-flv. Supported file extensions are: .mp4, .mov,
+    .avi, .mkv, .webm, .wmv, .3gp, and .flv. Files larger than 500MB are
+    rejected."""
     logger.info(f"Received upload request from user {current_user.id} - File: {file.filename}, Captions: {add_captions}")
 
     # SECURITY: Validate the uploaded file
