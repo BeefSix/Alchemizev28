@@ -1,0 +1,732 @@
+@tailwind base;
+@tailwind components;
+@import 'tailwindcss/utilities';
+
+/* Retro Gaming Terminal Theme */
+@font-face {
+  font-family: 'Alien Ravager';
+  src: url('/fonts/alien-ravager-font/AlienRavager-0WYod.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Alien Ravager';
+  src: url('/fonts/alien-ravager-font/AlienRavagerItalic-4B214.ttf') format('truetype');
+  font-weight: normal;
+  font-style: italic;
+}
+
+@font-face {
+  font-family: 'Ithaca';
+  src: url('/fonts/ithaca-font/Ithaca-LVB75.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Alien League';
+  src: url('/fonts/alien-league-font/AlienLeagueRegular-9D3Z.otf') format('opentype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Alien League';
+  src: url('/fonts/alien-league-font/AlienLeagueBold-1WRj.otf') format('opentype');
+  font-weight: bold;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Alien League Gradient';
+  src: url('/fonts/alien-league-font/AlienLeagueGradient-r6W8.otf') format('opentype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+/* Font aliases for retro gaming aesthetic */
+/* Data 70 = Courier Prime, Digital 7 = Orbitron */
+
+@layer base {
+  html {
+    font-family: 'Ithaca', monospace;
+    background: #c0c0c0;
+    color: #2c2c2c;
+    overflow-x: hidden;
+  }
+  
+  body {
+    @apply text-gray-800;
+    background: linear-gradient(180deg, #c0c0c0 0%, #a8a8a8 100%);
+    position: relative;
+  }
+
+  /* Subtle CRT Scanlines Effect */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(44, 44, 44, 0.02) 0px,
+      rgba(44, 44, 44, 0.02) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  /* Subtle CRT Glow Effect */
+  body::after {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle at center, transparent 0%, rgba(255, 102, 0, 0.01) 100%);
+    animation: flicker 0.15s infinite;
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  @keyframes flicker {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.99; }
+  }
+}
+
+@layer components {
+  /* Terminal Container */
+  .terminal-container {
+    @apply border rounded-none p-6;
+    background: linear-gradient(145deg, #d0d0d0 0%, #b8b8b8 50%, #d0d0d0 100%);
+    border: 2px solid #808080;
+    box-shadow: 
+      0 4px 12px rgba(0, 0, 0, 0.2),
+      inset 0 2px 4px rgba(255, 255, 255, 0.3),
+      inset 0 -2px 4px rgba(0, 0, 0, 0.1);
+    position: relative;
+  }
+
+  .terminal-container::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: repeating-linear-gradient(
+      90deg,
+      transparent 0px,
+      transparent 2px,
+      rgba(255, 102, 0, 0.02) 2px,
+      rgba(255, 102, 0, 0.02) 3px
+    );
+    pointer-events: none;
+  }
+
+  /* Terminal Header */
+  .terminal-header {
+     @apply text-gray-800 text-lg mb-4 pb-2;
+     font-family: 'Ithaca', monospace;
+     border-bottom: 2px solid #ff6600;
+     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+     position: relative;
+     color: #2c2c2c;
+   }
+
+  .terminal-header::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent 0%, #ff6600 50%, transparent 100%);
+    animation: scan 3s linear infinite;
+  }
+
+  @keyframes scan {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  /* Terminal Button */
+  .btn {
+    @apply inline-flex items-center justify-center rounded text-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none;
+    font-family: 'Ithaca', monospace;
+    background: linear-gradient(145deg, #e0e0e0 0%, #c8c8c8 50%, #e0e0e0 100%);
+    border: 2px solid #808080;
+    color: #2c2c2c;
+    text-shadow: 0 1px 1px rgba(255, 255, 255, 0.5);
+    box-shadow: 
+      0 2px 4px rgba(0, 0, 0, 0.2),
+      inset 0 1px 2px rgba(255, 255, 255, 0.3),
+      inset 0 -1px 2px rgba(0, 0, 0, 0.1);
+  }
+  
+  .btn:hover {
+    background: linear-gradient(145deg, #d8d8d8 0%, #c0c0c0 50%, #d8d8d8 100%);
+    border-color: #ff6600;
+    box-shadow: 
+      0 3px 6px rgba(0, 0, 0, 0.25),
+      inset 0 1px 2px rgba(255, 255, 255, 0.4),
+      inset 0 -1px 2px rgba(0, 0, 0, 0.15);
+    transform: translateY(-1px);
+  }
+  
+  .btn-primary {
+    @apply btn;
+    background: linear-gradient(145deg, #ff8533 0%, #ff6600 50%, #ff8533 100%);
+    border-color: #cc5200;
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  }
+  
+  .btn-primary:hover {
+    background: linear-gradient(145deg, #ff7020 0%, #e55a00 50%, #ff7020 100%);
+    border-color: #b84700;
+  }
+  
+  .btn-secondary {
+    @apply btn;
+    background: linear-gradient(145deg, #f0f0f0 0%, #d8d8d8 50%, #f0f0f0 100%);
+    border-color: #999999;
+  }
+  
+  .btn-outline {
+    @apply btn;
+    background: transparent;
+    border-color: #cc5200;
+    color: #cc5200;
+  }
+  
+  .btn-outline:hover {
+    background: linear-gradient(145deg, #001100 0%, #002200 100%);
+    color: #994000;
+  }
+  
+  .btn-destructive {
+    @apply btn;
+    background: linear-gradient(145deg, #ffcccc 0%, #ff9999 50%, #ffcccc 100%);
+    border-color: #cc0000;
+    color: #990000;
+  }
+  
+  .btn-destructive:hover {
+    background: linear-gradient(145deg, #ffb3b3 0%, #ff8080 50%, #ffb3b3 100%);
+    border-color: #990000;
+  }
+  
+  .btn-ghost {
+    @apply btn;
+    background: transparent;
+    border-color: transparent;
+  }
+  
+  .btn-ghost:hover {
+    background: linear-gradient(145deg, #f0f0f0 0%, #e0e0e0 100%);
+  }
+  
+  .btn-link {
+    @apply btn;
+    background: transparent;
+    border-color: transparent;
+    text-decoration: underline;
+    color: #cc5200;
+  }
+  
+  .btn-link:hover {
+    background: linear-gradient(145deg, #fff2e6 0%, #ffe6cc 100%);
+    color: #994000;
+  }
+  
+  .btn-sm {
+    @apply h-8 px-3 text-xs;
+  }
+  
+  .btn-lg {
+    @apply h-12 px-8 text-base;
+  }
+
+  /* Terminal Input */
+  .input {
+    @apply flex h-10 w-full rounded border px-3 py-2 text-sm file:border-0 file:bg-transparent file:text-sm file:font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50;
+    font-family: 'Ithaca', monospace;
+    background: linear-gradient(145deg, #000000 0%, #111111 100%);
+     border: 2px inset #00ff00;
+     color: #00ff00;
+    text-shadow: none;
+    box-shadow: 
+      inset 2px 2px 4px rgba(0, 0, 0, 0.1),
+      inset -1px -1px 2px rgba(255, 255, 255, 0.8);
+  }
+
+  .input:focus {
+    background: linear-gradient(145deg, #000000 0%, #0a0a0a 100%);
+    border-color: #ff6600;
+    box-shadow: 
+      0 0 0 2px rgba(255, 102, 0, 0.2),
+      inset 2px 2px 4px rgba(0, 0, 0, 0.1),
+      inset -1px -1px 2px rgba(255, 255, 255, 0.8);
+  }
+
+  .input::placeholder {
+    color: #808080;
+  }
+  
+  /* Terminal Card */
+  .card {
+    @apply rounded border shadow-none;
+    background: linear-gradient(145deg, #e8e8e8 0%, #d0d0d0 50%, #e8e8e8 100%);
+    border: 2px solid #a0a0a0;
+    box-shadow: 
+      0 4px 8px rgba(0, 0, 0, 0.15),
+      inset 0 2px 4px rgba(255, 255, 255, 0.4),
+      inset 0 -2px 4px rgba(0, 0, 0, 0.1);
+    position: relative;
+  }
+
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: repeating-linear-gradient(
+      45deg,
+      transparent 0px,
+      transparent 2px,
+      rgba(255, 102, 0, 0.02) 2px,
+      rgba(255, 102, 0, 0.02) 3px
+    );
+    pointer-events: none;
+  }
+  
+  .card-header {
+    @apply flex flex-col space-y-1.5 p-6;
+  }
+  
+  .card-title {
+    @apply text-2xl leading-none tracking-tight;
+    font-family: 'Ithaca', monospace;
+    color: #2c2c2c;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+  
+  .card-description {
+    @apply text-sm;
+    color: #666666;
+  }
+  
+  .card-content {
+    @apply p-6 pt-0;
+  }
+  
+  .card-footer {
+    @apply flex items-center p-6 pt-0;
+  }
+
+  /* Status Indicators */
+  .status-indicator {
+    @apply inline-block w-3 h-3 rounded-full mr-2;
+    box-shadow: 0 0 10px currentColor;
+  }
+
+  .status-online {
+    background-color: #008800;
+    animation: pulse 2s infinite;
+  }
+
+  .status-processing {
+    background-color: #ff6600;
+    animation: blink 1s infinite;
+  }
+
+  .status-error {
+    background-color: #cc0000;
+    animation: blink 0.5s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* Progress Bar */
+  .progress-bar {
+    @apply w-full rounded h-3;
+    background: linear-gradient(145deg, #a0a0a0 0%, #888888 100%);
+    border: 2px inset #c0c0c0;
+    box-shadow: inset 2px 2px 4px rgba(0, 0, 0, 0.2);
+  }
+
+  .progress-bar-fill {
+    @apply h-3 rounded transition-all duration-300 ease-out;
+    background: linear-gradient(90deg, #ff6600 0%, #cc5200 100%);
+    box-shadow: 0 2px 4px rgba(255, 102, 0, 0.3);
+  }
+
+  /* File Upload Area */
+  .dropzone {
+    @apply border-2 border-dashed rounded p-8 text-center transition-colors;
+    border-color: #00ff00;
+    background: linear-gradient(145deg, #111111 0%, #000000 100%);
+    box-shadow: 
+      0 4px 8px rgba(0, 255, 0, 0.1),
+      inset 0 2px 4px rgba(0, 255, 0, 0.3);
+  }
+
+  .dropzone.active {
+    border-color: #ff6600;
+    background: linear-gradient(145deg, #001100 0%, #002200 100%);
+    box-shadow: 
+      0 6px 12px rgba(255, 102, 0, 0.2),
+      inset 0 2px 4px rgba(0, 255, 0, 0.3);
+  }
+
+  .dropzone.reject {
+    border-color: #cc0000;
+    background: linear-gradient(145deg, #110000 0%, #220000 100%);
+    box-shadow: 
+      0 6px 12px rgba(204, 0, 0, 0.2),
+      inset 0 2px 4px rgba(255, 0, 0, 0.3);
+  }
+
+  /* Loading Spinner */
+  .spinner {
+    border: 2px solid #c0c0c0;
+    border-top: 2px solid #ff6600;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    animation: spin 1s linear infinite;
+    box-shadow: 0 2px 4px rgba(255, 102, 0, 0.3);
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  /* Navigation */
+  .nav-link {
+    @apply transition-colors duration-200;
+    color: #2c2c2c;
+    text-shadow: 0 1px 1px rgba(255, 255, 255, 0.5);
+  }
+
+  .nav-link:hover {
+    color: #cc5200;
+  }
+
+  .nav-link.active {
+    color: #cc5200;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Toast Notifications */
+  .toast {
+    @apply fixed top-4 right-4 z-50 max-w-sm w-full rounded shadow-none p-4;
+    background: linear-gradient(145deg, #111111 0%, #000000 100%);
+    border: 2px solid #00ff00;
+    box-shadow: 
+      0 4px 8px rgba(0, 255, 0, 0.15),
+      inset 0 2px 4px rgba(0, 255, 0, 0.4);
+  }
+
+  .toast-success {
+    @apply border-green-400;
+    background: linear-gradient(145deg, #001100 0%, #003300 100%);
+  }
+
+  .toast-error {
+    @apply border-red-500;
+    background: linear-gradient(145deg, #110000 0%, #330000 100%);
+  }
+
+  .toast-warning {
+    @apply border-yellow-500;
+    background: linear-gradient(145deg, #111100 0%, #333300 100%);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #000000;
+    border: 1px solid #00ff00;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #00ff00;
+    border-radius: 0;
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #00aa00;
+    box-shadow: 0 0 15px rgba(0, 255, 0, 0.7);
+  }
+
+  /* Video Player */
+  .video-player {
+    @apply rounded-none overflow-hidden shadow-none border border-green-500;
+    background: #000000;
+    box-shadow: 
+      0 0 20px rgba(0, 255, 0, 0.3),
+      inset 0 0 20px rgba(0, 255, 0, 0.1);
+  }
+
+  .video-player video {
+    @apply w-full h-auto;
+  }
+
+  /* Command Line Interface */
+  .cli-prompt {
+    @apply text-green-400 font-mono;
+  }
+
+  .cli-cursor {
+    @apply inline-block w-2 h-4 bg-green-400 ml-1;
+    animation: blink 1s infinite;
+    box-shadow: 0 0 5px rgba(0, 255, 0, 0.8);
+  }
+
+  /* System Status Panel */
+  .system-status {
+    @apply border border-green-500 p-4;
+    background: linear-gradient(145deg, #000000 0%, #001100 100%);
+    box-shadow: 
+      0 0 20px rgba(0, 255, 0, 0.3),
+      inset 0 0 20px rgba(0, 255, 0, 0.1);
+  }
+
+  .system-status::before {
+    content: 'SYSTEM STATUS';
+    @apply block text-xs font-bold text-green-400 mb-2;
+    font-family: 'Ithaca', monospace;
+
+  }
+
+  /* Data Display */
+  .data-display {
+    @apply font-mono text-base;
+    color: #00ff00;
+  }
+
+  .data-label {
+    @apply text-green-600 font-semibold text-base;
+  }
+
+  .data-value {
+    @apply text-green-400 font-bold text-base;
+  }
+
+  /* Terminal Text Effects */
+  .terminal-text {
+    font-family: 'Ithaca', monospace;
+    color: #00ff00;
+    text-shadow: 0 0 3px rgba(0, 255, 0, 0.5);
+  }
+
+  .terminal-text-bold {
+    font-family: 'Ithaca', monospace;
+    color: #00ff00;
+    text-shadow: 
+      -1px -1px 0 #000,
+      1px -1px 0 #000,
+      -1px 1px 0 #000,
+      1px 1px 0 #000,
+      0 0 5px rgba(0, 255, 0, 0.5);
+  }
+
+  .zuexis-title {
+    font-family: 'Alien Ravager', monospace;
+    color: #000000;
+    text-shadow: 
+      0 0 10px rgba(255, 102, 0, 0.8),
+      0 0 20px rgba(255, 102, 0, 0.6),
+      0 0 30px rgba(255, 102, 0, 0.4),
+      0 0 40px rgba(255, 102, 0, 0.2);
+  }
+
+  .terminal-text-dim {
+    font-family: 'Ithaca', monospace;
+    color: #00cc00;
+    text-shadow: 0 0 2px rgba(0, 204, 0, 0.4);
+  }
+
+  /* Green Glow Effects for Black Boxes */
+  .bg-black, [class*="bg-black"] {
+    box-shadow: 0 0 10px rgba(0, 255, 0, 0.3), inset 0 0 10px rgba(0, 255, 0, 0.1);
+  }
+
+  .bg-gray-800, [class*="bg-gray-800"] {
+    box-shadow: 0 0 8px rgba(0, 255, 0, 0.25), inset 0 0 8px rgba(0, 255, 0, 0.08);
+  }
+
+  .bg-gray-900, [class*="bg-gray-900"] {
+    box-shadow: 0 0 12px rgba(0, 255, 0, 0.35), inset 0 0 12px rgba(0, 255, 0, 0.12);
+  }
+
+  /* Glitch Effect */
+  .glitch {
+    position: relative;
+  }
+
+  .glitch::before,
+  .glitch::after {
+    content: attr(data-text);
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .glitch::before {
+    animation: glitch-1 0.5s infinite;
+    color: #ff0000;
+    z-index: -1;
+  }
+
+  .glitch::after {
+    animation: glitch-2 0.5s infinite;
+    color: #0000ff;
+    z-index: -2;
+  }
+
+  @keyframes glitch-1 {
+    0%, 100% { transform: translate(0); }
+    20% { transform: translate(-2px, 2px); }
+    40% { transform: translate(-2px, -2px); }
+    60% { transform: translate(2px, 2px); }
+    80% { transform: translate(2px, -2px); }
+  }
+
+  @keyframes glitch-2 {
+    0%, 100% { transform: translate(0); }
+    20% { transform: translate(2px, -2px); }
+    40% { transform: translate(2px, 2px); }
+    60% { transform: translate(-2px, -2px); }
+    80% { transform: translate(-2px, 2px); }
+  }
+
+  /* Alien League Gradient Titles */
+  .alien-league-title {
+    font-family: 'Alien League Gradient', 'Alien League', 'Orbitron', monospace;
+    background: linear-gradient(45deg, #00ff00, #00aa00, #ffff00, #ff6600);
+    background-size: 400% 400%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradient-shift 3s ease-in-out infinite;
+    text-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+    filter: drop-shadow(0 0 5px rgba(0, 255, 0, 0.3));
+  }
+
+  .alien-league-title-large {
+    font-family: 'Alien League Gradient', 'Alien League', 'Orbitron', monospace;
+    background: linear-gradient(45deg, #00ff00, #00aa00, #ffff00, #ff6600);
+    background-size: 400% 400%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradient-shift 3s ease-in-out infinite;
+    text-shadow: 0 0 15px rgba(0, 255, 0, 0.7);
+    filter: drop-shadow(0 0 8px rgba(0, 255, 0, 0.5));
+    font-size: 2rem;
+    font-weight: bold;
+  }
+
+  .alien-league-title-orange-aura {
+    font-family: 'Alien League Gradient', 'Alien League', 'Orbitron', monospace;
+    color: #ff6600;
+    font-size: 2rem;
+    font-weight: bold;
+    text-shadow: 
+      0 0 5px rgba(255, 102, 0, 1),
+      0 0 10px rgba(255, 102, 0, 0.8),
+      0 0 15px rgba(255, 102, 0, 0.6),
+      0 0 20px rgba(255, 102, 0, 0.4),
+      0 0 25px rgba(255, 102, 0, 0.3),
+      0 0 30px rgba(255, 102, 0, 0.2);
+    filter: drop-shadow(0 0 20px rgba(255, 102, 0, 0.8));
+    animation: orange-glow 2s ease-in-out infinite alternate;
+  }
+
+  @keyframes orange-glow {
+    0% {
+      text-shadow: 
+        0 0 5px rgba(255, 102, 0, 1),
+        0 0 10px rgba(255, 102, 0, 0.8),
+        0 0 15px rgba(255, 102, 0, 0.6),
+        0 0 20px rgba(255, 102, 0, 0.4);
+    }
+    100% {
+      text-shadow: 
+        0 0 10px rgba(255, 102, 0, 1),
+        0 0 20px rgba(255, 102, 0, 0.9),
+        0 0 30px rgba(255, 102, 0, 0.7),
+        0 0 40px rgba(255, 102, 0, 0.5),
+        0 0 50px rgba(255, 102, 0, 0.3);
+    }
+  }
+
+  @keyframes gradient-shift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  /* Enhanced font sizes for better readability */
+  .text-xs {
+    font-size: 0.875rem; /* 14px instead of 12px */
+    line-height: 1.25rem;
+  }
+  
+  .text-sm {
+    font-size: 1rem; /* 16px instead of 14px */
+    line-height: 1.5rem;
+  }
+  
+  /* Enhanced terminal text styles with better sizing */
+  .terminal-text-enhanced {
+    font-family: 'Ithaca', monospace;
+    color: #00ff00;
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+  
+  .terminal-text-dim-enhanced {
+    font-family: 'Ithaca', monospace;
+    color: #00aa00;
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+}

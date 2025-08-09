@@ -1,0 +1,39 @@
+# Dockerfile.gpu – CUDA 12.4 runtime + PyTorch 2.7 + GPU-accelerated FFmpeg
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+# ---- system packages with GPU acceleration support ----
+RUN apt-get update && \
+    apt-get install -y \
+        git python3-pip wget xz-utils \
+        # NVIDIA Video Codec SDK dependencies
+        libnvidia-encode-470 libnvidia-decode-470 \
+        # Additional GPU acceleration libraries
+        libva-dev libvdpau-dev \
+        # System utilities
+        curl unzip ca-certificates \
+        # Magic library for file type detection
+        libmagic1 libmagic-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install GPU-accelerated FFmpeg build
+RUN wget -q https://johnvansickle.com/ffmpeg/builds/ffmpeg-git-amd64-static.tar.xz && \
+    tar -xf ffmpeg-git-amd64-static.tar.xz && \
+    mv ffmpeg-git-*/ffmpeg /usr/local/bin/ && \
+    mv ffmpeg-git-*/ffprobe /usr/local/bin/ && \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe && \
+    rm -rf ffmpeg-git-* ffmpeg-git-amd64-static.tar.xz
+
+# Verify FFmpeg installation and GPU support
+RUN ffmpeg -version && ffmpeg -encoders | grep nvenc
+
+# ---- Python deps ----
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt    # torch 2.7.1 already in reqs
+
+# ---- project code ----
+COPY . .
+
+# non-root user (UID/GID 1001 matches other services)
+USER 1001:1001

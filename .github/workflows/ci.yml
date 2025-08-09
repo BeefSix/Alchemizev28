@@ -1,0 +1,224 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint-and-type-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install black flake8 mypy pytest pytest-asyncio pytest-cov
+    
+    - name: Run Black (Code Formatting)
+      run: |
+        black --check --diff app/ frontend/ tests/
+    
+    - name: Run Flake8 (Linting)
+      run: |
+        flake8 app/ frontend/ tests/ --max-line-length=88 --extend-ignore=E203,W503
+    
+    - name: Run MyPy (Type Checking)
+      run: |
+        mypy app/ --ignore-missing-imports --no-strict-optional
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install security tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit safety
+    
+    - name: Run Bandit (Security Linting)
+      run: |
+        bandit -r app/ -f json -o bandit-report.json || true
+        bandit -r app/ --severity-level medium
+    
+    - name: Run Safety (Dependency Security Check)
+      run: |
+        safety check --json --output safety-report.json || true
+        safety check
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_USER: testuser
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-cov httpx
+    
+    - name: Set up test environment
+      run: |
+        mkdir -p uploads temp static
+        cp .env.example .env
+      env:
+        DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/testdb
+        REDIS_URL: redis://localhost:6379/0
+        SECRET_KEY: test-secret-key-for-ci
+        ENVIRONMENT: testing
+    
+    - name: Run database migrations
+      run: |
+        python -c "from app.database.database import create_tables; create_tables()"
+      env:
+        DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/testdb
+    
+    - name: Run tests with coverage
+      run: |
+        pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
+      env:
+        DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/testdb
+        REDIS_URL: redis://localhost:6379/0
+        SECRET_KEY: test-secret-key-for-ci
+        ENVIRONMENT: testing
+        OPENAI_API_KEY: sk-test-fake-key-for-testing
+    
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-reports
+        path: |
+          coverage.xml
+          htmlcov/
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [lint-and-type-check, test]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker images
+      run: |
+        docker build --target web -t alchemize-web .
+        docker build --target worker -t alchemize-worker .
+        docker build --target frontend -t alchemize-frontend .
+    
+    - name: Test Docker containers
+      run: |
+        # Test that containers can start without errors
+        docker run --rm alchemize-web python -c "import app.main; print('Web container OK')"
+        docker run --rm alchemize-worker python -c "import app.celery_app; print('Worker container OK')"
+        docker run --rm alchemize-frontend python -c "import streamlit; print('Frontend container OK')"
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [lint-and-type-check, test, docker-build]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        # Add your staging deployment commands here
+        # For example: kubectl apply -f k8s/staging/
+        # Or: docker-compose -f docker-compose.staging.yml up -d
+    
+    environment:
+      name: staging
+      url: https://staging.yourdomain.com
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [lint-and-type-check, test, docker-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production environment..."
+        # Add your production deployment commands here
+        # Ensure proper security checks and approvals
+    
+    environment:
+      name: production
+      url: https://yourdomain.com
+      protection_rules:
+        - required_reviewers
+        - wait_timer: 5

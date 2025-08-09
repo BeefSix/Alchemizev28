@@ -1,0 +1,54 @@
+# Core Frameworks
+fastapi==0.116.1
+uvicorn[standard]==0.32.1
+streamlit==1.38.0
+requests==2.32.3
+python-dotenv==1.0.1
+beautifulsoup4==4.13.4
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.0
+slowapi==0.1.9
+pydantic[email]==2.10.4
+pydantic-settings==2.6.1
+email-validator==2.2.0
+python-multipart==0.0.20
+
+# Database & ORM
+sqlalchemy==2.0.41
+psycopg2-binary==2.9.9
+alembic==1.14.1
+
+# Task Queue & Message Broker
+celery==5.4.0
+redis==5.2.1
+
+# Cloud & Storage
+firebase-admin==7.0.0
+boto3>=1.34.0
+botocore>=1.34.0
+pydub==0.25.1
+
+# AI & Machine Learning
+openai==1.58.1
+diffusers==0.34.0
+transformers==4.44.2
+accelerate==1.8.1
+torch==2.7.1
+torchvision==0.22.1
+
+# Media & Document Processing
+yt-dlp==2024.12.13
+Pillow==10.4.0
+gTTS==2.5.4
+PyMuPDF==1.25.2
+python-docx==1.1.2
+
+# Development & Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+httpx==0.28.1
+python-jose[cryptography]==3.3.0
+aiofiles==23.2.1
+python-magic==0.4.27
+python-magic-bin==0.4.14  # Windows libmagic support
+nvidia-ml-py3==7.352.0    # GPU monitoring and acceleration

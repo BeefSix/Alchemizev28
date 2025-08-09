@@ -1,0 +1,75 @@
+<svg width="800" height="400" viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+  <!-- CRT Monitor Frame -->
+  <defs>
+    <radialGradient id="screenGlow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" style="stop-color:#001100;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#000000;stop-opacity:1" />
+    </radialGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge> 
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Monitor Bezel -->
+  <rect x="20" y="40" width="760" height="320" rx="20" ry="20" fill="#2a2a2a" stroke="#666" stroke-width="3"/>
+  <rect x="30" y="50" width="740" height="300" rx="15" ry="15" fill="#1a1a1a" stroke="#444" stroke-width="2"/>
+  
+  <!-- Screen -->
+  <rect x="50" y="70" width="700" height="260" rx="10" ry="10" fill="url(#screenGlow)"/>
+  
+  <!-- Scan Lines -->
+  <defs>
+    <pattern id="scanlines" patternUnits="userSpaceOnUse" width="1" height="4">
+      <rect width="1" height="2" fill="#000000" opacity="0.1"/>
+      <rect y="2" width="1" height="2" fill="#003300" opacity="0.05"/>
+    </pattern>
+  </defs>
+  <rect x="50" y="70" width="700" height="260" fill="url(#scanlines)"/>
+  
+  <!-- Terminal Text -->
+  <text x="400" y="180" text-anchor="middle" font-family="Courier New, monospace" font-size="48" font-weight="bold" fill="#00ff00" filter="url(#glow)">
+    Zuexis_
+  </text>
+  
+  <!-- Cursor Blink -->
+  <rect x="580" y="155" width="15" height="35" fill="#00ff00" opacity="0.8">
+    <animate attributeName="opacity" values="0.8;0;0.8" dur="1s" repeatCount="indefinite"/>
+  </rect>
+  
+  <!-- Terminal Prompt Lines -->
+  <text x="70" y="120" font-family="Courier New, monospace" font-size="12" fill="#00aa00" opacity="0.7">
+    ZUEXIS CORP TERMINAL v4.0.1
+  </text>
+  <text x="70" y="140" font-family="Courier New, monospace" font-size="12" fill="#00aa00" opacity="0.7">
+    QUANTUM AI MAINFRAME ACCESS GRANTED
+  </text>
+  
+  <text x="70" y="220" font-family="Courier New, monospace" font-size="12" fill="#00aa00" opacity="0.6">
+    > INITIALIZING AI CONTENT SYSTEM...
+  </text>
+  <text x="70" y="240" font-family="Courier New, monospace" font-size="12" fill="#00aa00" opacity="0.6">
+    > NEURAL NETWORKS ONLINE
+  </text>
+  <text x="70" y="260" font-family="Courier New, monospace" font-size="12" fill="#00aa00" opacity="0.6">
+    > READY FOR CONTENT GENERATION
+  </text>
+  
+  <!-- Status Indicators -->
+  <circle cx="680" cy="100" r="4" fill="#00ff00">
+    <animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite"/>
+  </circle>
+  <text x="695" y="105" font-family="Courier New, monospace" font-size="10" fill="#00aa00">SYS</text>
+  
+  <circle cx="680" cy="120" r="4" fill="#ffaa00">
+    <animate attributeName="opacity" values="1;0.5;1" dur="1.5s" repeatCount="indefinite"/>
+  </circle>
+  <text x="695" y="125" font-family="Courier New, monospace" font-size="10" fill="#00aa00">NET</text>
+  
+  <!-- Monitor Stand -->
+  <rect x="350" y="360" width="100" height="20" rx="5" ry="5" fill="#333"/>
+  <rect x="320" y="380" width="160" height="15" rx="8" ry="8" fill="#444"/>
+</svg>

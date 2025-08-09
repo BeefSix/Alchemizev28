@@ -1,0 +1,181 @@
+# Environment variables
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+
+# Firebase credentials
+serviceAccountKey.json
+firebase-credentials.json
+firebase-credentials-*.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+zuexis.db
+alchemize.db
+
+# Temporary files
+temp_*
+chunk_*
+final_clip_*
+thumbnail_*
+*.mp4
+*.mp3
+*.png
+*.jpg
+*.jpeg
+*.webm
+*.avi
+*.mov
+*.mkv
+*.wmv
+*.flv
+*.m4v
+*.3gp
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+usage_log.json
+logs/
+*.log.*
+
+# User uploads and generated content
+uploads/
+static/generated/
+data/static/
+/tmp/
+temp/
+cache/
+
+# Large media files
+*.mkv
+*.mp4
+*.webm
+*.avi
+*.mov
+*.wmv
+*.flv
+*.m4v
+*.3gp
+*.mp3
+*.wav
+*.aac
+*.ogg
+
+# Security and secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+.secrets/
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# Test files
+test_*.py
+*_test.py
+tests/test_*.py
+
+# Documentation builds
+docs/_build/
+site/
+
+# Docker
+.dockerignore
+
+# Local development
+.local/
+local/
+
+# Monitoring and analytics
+analytics/
+monitoring/
+metrics/
+
+# Payment processing
+stripe_webhooks.log
+payment_logs/
+
+# AI model files (if any)
+*.model
+*.pkl
+*.joblib
+models/
+
+# Redis dumps
+dump.rdb
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# MacOS
+.AppleDouble
+.LSOverride
+
+# Windows
+ehthumbs.db
+Icon?
+
+# Linux
+*~
+
+# Temporary directories
+tmp/
+temp/
+.tmp/
+.temp/
