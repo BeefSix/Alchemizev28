@@ -324,6 +324,9 @@ def run_videoclip_upload_job(self, job_id: str, user_id: int, video_path: str, a
                 "total_clips": len(clips_created),
                 "video_duration": duration,
                 "captions_added": captions_actually_added,
+                "transcript": {
+                    "words": words_data
+                } if words_data else {},
                 "processing_details": {
                     "aspect_ratio": aspect_ratio,
                     "clip_duration": clip_duration,
@@ -528,16 +531,36 @@ def run_videoclip_upload_job_sync(job_id: str, user_id: int, video_path: str, ad
             words_data=words_data
         )
         
-        # STEP 5: Finalize job
+        # STEP 5: Create proper results structure for frontend compatibility
+        results = {
+            "clips_by_platform": {
+                "all": output_files,  # ✅ CRITICAL: Frontend expects this exact key
+                "all_platforms": output_files,  # Keep for backward compatibility
+                "TikTok": output_files,
+                "Instagram": output_files,
+                "YouTube": output_files
+            },
+            "total_clips": len(output_files),
+            "video_duration": duration,
+            "captions_added": captions_actually_added,
+            "transcript": {
+                "words": words_data
+            } if words_data else {},
+            "processing_details": {
+                "aspect_ratio": aspect_ratio,
+                "processing_method": "sync_mode",
+                "captions_added": captions_actually_added
+            }
+        }
+        
+        # Finalize job with proper results structure
         with get_db_session() as db:
             crud.update_job_full_status(db, job_id, "COMPLETED", 
                 progress_details={
-                    "description": "Processing complete!", 
-                    "percentage": 100,
-                    "output_files": output_files,
-                    "captions_added": captions_actually_added,
-                    "processing_time": "sync_mode"
-                })
+                    "description": f"🎉 Generated {len(output_files)} clips" + (f" with captions!" if captions_actually_added else "!"), 
+                    "percentage": 100
+                },
+                results=results)
         
         logger.info(f"✅ Sync video job {job_id} completed successfully")
         return True

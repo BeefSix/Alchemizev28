@@ -1,0 +1,49 @@
+{
+  "overall_status": "\ud83d\udfe1 PARTIAL",
+  "gpu_ready": false,
+  "services_ready": true,
+  "running_services": 3,
+  "total_services": 3,
+  "gpu_status": "unavailable",
+  "services": [
+    {
+      "name": "Redis",
+      "status": "running",
+      "details": "Connected on port 6379",
+      "port": 6379,
+      "url": "redis://localhost:6379"
+    },
+    {
+      "name": "Backend API",
+      "status": "running",
+      "details": "Responding on port 8000",
+      "port": 8000,
+      "url": "http://localhost:8000/health"
+    },
+    {
+      "name": "Frontend",
+      "status": "running",
+      "details": "Responding on port 8501",
+      "port": 8501,
+      "url": "http://localhost:8501"
+    }
+  ],
+  "dependencies": {
+    "python": {
+      "status": "\u2705",
+      "version": "Python 3.10.11"
+    },
+    "ffmpeg": {
+      "status": "\u2705",
+      "version": "ffmpeg version 7.1.1-essentials_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers"
+    },
+    "redis": {
+      "status": "\u274c",
+      "error": "Not found"
+    },
+    "pip": {
+      "status": "\u2705",
+      "version": "pip 25.0.1 from C:\\Users\\merli\\AppData\\Local\\Programs\\Python\\Python310\\lib\\site-packages\\pip (python 3.10)"
+    }
+  }
+}

@@ -12,7 +12,7 @@ import {
   UploadCompleteResponse
 } from '@/types';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8001';
 
 class ApiClient {
   private baseUrl: string;
@@ -154,6 +154,10 @@ class ApiClient {
     return this.request<VideoClipJob>(`/api/v1/jobs/${jobId}`);
   }
 
+  async getJobStats(): Promise<any> {
+    return this.request<any>('/api/v1/jobs/stats');
+  }
+
   // Content Generation
   async generateContent(jobId: string, platforms: string[]): Promise<any[]> {
     return this.request<any[]>('/api/v1/content/generate', {
@@ -182,25 +186,14 @@ class ApiClient {
 
   // File Upload (Chunked)
   async initUpload(file: File): Promise<UploadInitResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/file-upload/init`, {
+    return this.request<UploadInitResponse>('/api/v1/file-upload/init', {
       method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify({
         filename: file.name,
         file_size: file.size,
         content_type: file.type,
       }),
     });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Upload init failed: ${response.statusText}`);
-    }
-
-    return response.json();
   }
 
   async uploadChunk(
@@ -212,9 +205,17 @@ class ApiClient {
     formData.append('chunk_number', chunkIndex.toString());
     formData.append('chunk', new Blob([chunkData]));
 
+    // Get token for authentication
+    const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const response = await fetch(`${this.baseUrl}/api/v1/file-upload/chunk/${uploadId}`, {
       method: 'POST',
       credentials: 'include',
+      headers,
       body: formData,
     });
 
@@ -225,17 +226,9 @@ class ApiClient {
   }
 
   async completeUpload(uploadId: string): Promise<UploadCompleteResponse> {
-    const response = await fetch(`${this.baseUrl}/api/v1/file-upload/complete/${uploadId}`, {
+    return this.request<UploadCompleteResponse>(`/api/v1/file-upload/complete/${uploadId}`, {
       method: 'POST',
-      credentials: 'include',
     });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Upload completion failed: ${response.statusText}`);
-    }
-
-    return response.json();
   }
 
   // Video Processing
@@ -244,11 +237,22 @@ class ApiClient {
     formData.append('file', uploadData.file);
     formData.append('add_captions', uploadData.add_captions.toString());
     formData.append('aspect_ratio', uploadData.aspect_ratio);
-    formData.append('platforms', uploadData.platforms.join(','));
+    formData.append('platforms', 'TikTok,Instagram,YouTube');
+
+    // Get the access token from localStorage
+    const accessToken = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
+    
+    const headers: Record<string, string> = {};
+    
+    // Add authorization header if token exists
+    if (accessToken) {
+      headers['Authorization'] = `Bearer ${accessToken}`;
+    }
 
     const response = await fetch(`${this.baseUrl}/api/v1/video/upload-and-clip`, {
       method: 'POST',
       credentials: 'include',
+      headers,
       body: formData,
     });
 

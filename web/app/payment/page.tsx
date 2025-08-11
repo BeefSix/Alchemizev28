@@ -5,9 +5,10 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ArrowLeft, CreditCard, DollarSign, TrendingUp, Settings, History, Download, Shield } from 'lucide-react';
+import { AuthGuard } from '@/components/auth-guard';
 import toast from 'react-hot-toast';
 
-export default function PaymentPage() {
+function PaymentPageContent() {
   const [selectedPlan, setSelectedPlan] = useState('pro');
   const [isProcessing, setIsProcessing] = useState(false);
   const router = useRouter();
@@ -321,5 +322,13 @@ export default function PaymentPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function PaymentPage() {
+  return (
+    <AuthGuard>
+      <PaymentPageContent />
+    </AuthGuard>
   );
 }

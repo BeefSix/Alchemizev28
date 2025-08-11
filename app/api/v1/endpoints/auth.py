@@ -7,6 +7,7 @@ from app.db.base import get_db
 from app.services.auth import create_access_token, get_current_active_user
 from app.core.security_utils import verify_password, validate_password_strength
 from app.db import models
+from pydantic import BaseModel
 import logging
 import re
 
@@ -16,16 +17,22 @@ router = APIRouter()
 class UserCreate(models.UserBase):
     password: str
 
-class User(models.UserBase):
+class UserResponse(BaseModel):
     id: int
+    email: str
+    full_name: str | None = None
     is_active: bool
+    subscription_plan: str = "free"
+    
+    class Config:
+        from_attributes = True
 
 class TokenResponse(models.BaseModel):
     access_token: str
     token_type: str
     user_email: str
 
-@router.post("/register", response_model=User)
+@router.post("/register", response_model=UserResponse)
 def register_user(user: UserCreate, db: Session = Depends(get_db)):
     """Register a new user account with comprehensive validation"""
     # Sanitize and validate email
@@ -126,7 +133,7 @@ def login_for_access_token(
             detail="Login failed. Please try again."
         )
 
-@router.get("/me", response_model=User)
+@router.get("/me", response_model=UserResponse)
 def read_users_me(current_user: models.User = Depends(get_current_active_user)):
     """Get current user profile"""
     return current_user

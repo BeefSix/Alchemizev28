@@ -17,14 +17,14 @@ class AdvancedRateLimiter:
         self.local_cache = defaultdict(lambda: defaultdict(deque))
         self.blocked_ips = defaultdict(datetime)
         self.user_limits = {
-            "upload": {"requests": 100, "window": 3600, "burst": 20},  # 100/hour, burst 20 (increased for development)
-            "api_general": {"requests": 200, "window": 3600, "burst": 50},  # 200/hour, burst 50
-            "auth": {"requests": 100, "window": 900, "burst": 20},  # 100/15min, burst 20 (more dev-friendly)
-            "download": {"requests": 100, "window": 3600, "burst": 20},  # 100/hour, burst 20
+            "upload": {"requests": 500, "window": 3600, "burst": 100},  # 500/hour, burst 100 (very dev-friendly)
+            "api_general": {"requests": 1000, "window": 3600, "burst": 200},  # 1000/hour, burst 200 (very dev-friendly)
+            "auth": {"requests": 500, "window": 900, "burst": 100},  # 500/15min, burst 100 (very dev-friendly)
+            "download": {"requests": 500, "window": 3600, "burst": 100},  # 500/hour, burst 100 (very dev-friendly)
         }
         self.ip_limits = {
-            "global": {"requests": 2000, "window": 3600, "burst": 200},  # 2000/hour per IP
-            "upload": {"requests": 150, "window": 3600, "burst": 30},  # 150/hour per IP (increased for development)
+            "global": {"requests": 10000, "window": 3600, "burst": 1000},  # 10000/hour per IP (very dev-friendly)
+            "upload": {"requests": 1000, "window": 3600, "burst": 200},  # 1000/hour per IP (very dev-friendly)
         }
     
     def _get_client_id(self, request: Request, user_id: Optional[str] = None) -> str:

@@ -9,9 +9,12 @@ import tempfile
 from pathlib import Path
 from app.core.config import settings
 from app.services.file_security import FileSecurityValidator
-# from app.core.limiter import limiter
-# from slowapi import Limiter
-# from slowapi.util import get_remote_address
+from app.services.rate_limiter import rate_limiter
+from app.services.payment import payment_service
+from app.services.auth import get_current_active_user
+from app.db.base import get_db
+from app.db import models
+from sqlalchemy.orm import Session
 from fastapi import Request
 import logging
 
@@ -50,13 +53,23 @@ class UploadCompleteResponse(BaseModel):
     message: str
 
 @router.post("/init", response_model=UploadInitResponse)
-# @limiter.limit("10/minute")
 async def initialize_upload(
-    upload_request: UploadInitRequest
+    request: Request,
+    upload_request: UploadInitRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
 ):
     """
     Initialize a chunked file upload session.
     """
+    # Check user plan first
+    user_plan = payment_service.get_user_plan(db, current_user.id)
+    
+    # Rate limiting - skip for enterprise users
+    if user_plan['plan'] != 'enterprise':
+        rate_info = await rate_limiter.check_rate_limit(
+            request, "upload", user_id=str(current_user.id)
+        )
     try:
         # Create a mock UploadFile for validation
         from io import BytesIO
@@ -72,9 +85,12 @@ async def initialize_upload(
         )
         
         # Validate file metadata (skip MIME validation for initialization)
+        # For enterprise users, skip user limits check since they have unlimited access
+        skip_limits = user_plan['plan'] == 'enterprise'
         validation_result = await file_security.validate_upload(
             mock_upload_file,
-            file_type='video',
+            str(current_user.id),
+            skip_user_limits=skip_limits,
             skip_mime_validation=True
         )
         

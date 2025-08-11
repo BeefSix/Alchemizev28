@@ -1,12 +1,16 @@
 import logging
 import time
-from typing import Callable, Dict, Any
+from typing import Callable, Dict, Any, Optional
 from fastapi import Request, Response, HTTPException
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.services.rate_limiter import rate_limiter
 from app.services.database_security import db_security
+from app.services.payment import payment_service
+from app.db.base import get_db
+from app.db import crud
+from jose import JWTError, jwt
 import re
 import json
 
@@ -48,20 +52,20 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             "/api/v1/jobs/stats"
         }
         
-        # Paths with custom rate limits - development-friendly settings
+        # Paths with custom rate limits - VERY development-friendly settings
         self.custom_rate_limits = {
-            "/api/v1/auth/login": {"requests": 100, "window": 900, "burst": 20},  # 100/15min (dev-friendly)
-            "/api/v1/auth/register": {"requests": 50, "window": 3600, "burst": 10},  # 50/hour (dev-friendly)
-            "/api/v1/video/upload-and-clip": {"requests": 30, "window": 3600, "burst": 5},  # 30/hour
-            "/api/v1/magic/magic-edit": {"requests": 60, "window": 3600, "burst": 10},  # 60/hour
-            "/api/v1/content/repurpose": {"requests": 100, "window": 3600, "burst": 15},  # 100/hour
-            "/api/v1/video/upload/init": {"requests": 50, "window": 3600, "burst": 10},  # 50/hour
-            "/api/v1/video/upload/chunk": {"requests": 1000, "window": 3600, "burst": 50},  # 1000/hour
-            "/api/v1/video/upload/complete": {"requests": 50, "window": 3600, "burst": 10},  # 50/hour
-            # File upload endpoints
-            "/api/v1/file-upload/init": {"requests": 50, "window": 3600, "burst": 10},  # 50/hour
-            "/api/v1/file-upload/chunk": {"requests": 1000, "window": 3600, "burst": 50},  # 1000/hour
-            "/api/v1/file-upload/complete": {"requests": 50, "window": 3600, "burst": 10},  # 50/hour
+            "/api/v1/auth/login": {"requests": 500, "window": 900, "burst": 50},  # 500/15min (very dev-friendly)
+            "/api/v1/auth/register": {"requests": 200, "window": 3600, "burst": 30},  # 200/hour (very dev-friendly)
+            "/api/v1/video/upload-and-clip": {"requests": 200, "window": 3600, "burst": 20},  # 200/hour (increased)
+            "/api/v1/magic/magic-edit": {"requests": 300, "window": 3600, "burst": 30},  # 300/hour (increased)
+            "/api/v1/content/repurpose": {"requests": 1000, "window": 3600, "burst": 100},  # 1000/hour (MUCH higher for dev)
+            "/api/v1/video/upload/init": {"requests": 200, "window": 3600, "burst": 30},  # 200/hour (increased)
+            "/api/v1/video/upload/chunk": {"requests": 5000, "window": 3600, "burst": 200},  # 5000/hour (increased)
+            "/api/v1/video/upload/complete": {"requests": 200, "window": 3600, "burst": 30},  # 200/hour (increased)
+            # File upload endpoints - very development-friendly
+            "/api/v1/file-upload/init": {"requests": 1000, "window": 3600, "burst": 200},  # 1000/hour (very dev-friendly)
+            "/api/v1/file-upload/chunk": {"requests": 10000, "window": 3600, "burst": 500},  # 10000/hour (very dev-friendly)
+            "/api/v1/file-upload/complete": {"requests": 1000, "window": 3600, "burst": 200},  # 1000/hour (very dev-friendly)
         }
         
         # Suspicious patterns to monitor
@@ -160,14 +164,64 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 except ValueError:
                     raise HTTPException(status_code=400, detail="Invalid Content-Length header")
     
+    def _get_user_from_token(self, request: Request) -> Optional[Any]:
+        """Extract and validate user from JWT token"""
+        try:
+            # Get token from Authorization header
+            authorization = request.headers.get("Authorization")
+            if not authorization or not authorization.startswith("Bearer "):
+                logger.debug(f"No valid authorization header found: {authorization}")
+                return None
+            
+            token = authorization.split(" ")[1]
+            
+            # Decode JWT token
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+            email: str = payload.get("sub")
+            if email is None:
+                logger.debug("No email found in JWT payload")
+                return None
+            
+            # Get user from database
+            db = next(get_db())
+            user = crud.get_user_by_email(db, email=email)
+            if user:
+                logger.debug(f"Found user: {user.email} (ID: {user.id})")
+            else:
+                logger.debug(f"No user found for email: {email}")
+            return user
+        except Exception as e:
+            logger.debug(f"Could not extract user from token: {e}")
+            return None
+    
     async def _apply_rate_limiting(self, request: Request) -> Dict[str, Any]:
         """Apply rate limiting based on endpoint and user"""
         path = request.url.path
         
         # Get user ID if authenticated
         user_id = None
-        if hasattr(request.state, 'user'):
-            user_id = str(request.state.user.id)
+        user = self._get_user_from_token(request)
+        
+        if user:
+            user_id = str(user.id)
+            logger.debug(f"Processing rate limit for user {user.email} (ID: {user.id})")
+            
+            # Check if user is enterprise - skip rate limiting for enterprise users
+            try:
+                db = next(get_db())
+                user_plan = payment_service.get_user_plan(db, user.id)
+                logger.debug(f"User plan for {user.email}: {user_plan}")
+                if user_plan['plan'] == 'enterprise':
+                    logger.info(f"Bypassing rate limit for enterprise user: {user.email}")
+                    # Return dummy rate info for enterprise users (no limits applied)
+                    return {
+                        'allowed': True,
+                        'remaining': 999999,
+                        'reset_time': time.time() + 3600,
+                        'limit': 999999
+                    }
+            except Exception as e:
+                logger.warning(f"Could not check user plan for rate limiting: {e}")
         
         # Determine endpoint category
         endpoint_category = self._get_endpoint_category(path)
@@ -198,6 +252,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
     
     def _is_rate_limit_exempt(self, request: Request) -> bool:
         """Check if path is exempt from rate limiting"""
+        # Always exempt OPTIONS requests (CORS preflight)
+        if request.method == "OPTIONS":
+            return True
         path = request.url.path
         return any(exempt_path in path for exempt_path in self.rate_limit_exempt_paths)
     

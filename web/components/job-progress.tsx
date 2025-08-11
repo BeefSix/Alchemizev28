@@ -19,14 +19,27 @@ export function JobProgress({ jobId, onComplete }: JobProgressProps) {
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
 
   useEffect(() => {
+    console.log('🔍 JobProgress: Fetching job with ID:', jobId);
     fetchJob(jobId);
   }, [jobId, fetchJob]);
 
   useEffect(() => {
+    console.log('🔍 JobProgress: Current job data:', currentJob);
+    if (currentJob) {
+      console.log('🔍 JobProgress: Job status:', currentJob.status);
+      console.log('🔍 JobProgress: Has results:', !!currentJob.results);
+      if (currentJob.results) {
+        console.log('🔍 JobProgress: Results data:', currentJob.results);
+        const clips = currentJob.results.clips_by_platform?.all || [];
+        console.log('🔍 JobProgress: Number of clips:', clips.length);
+      }
+    }
     if (currentJob?.status === 'COMPLETED' && onComplete) {
       onComplete(currentJob);
     }
   }, [currentJob, onComplete]);
+
+
 
   if (!currentJob) {
     return (
@@ -59,7 +72,45 @@ export function JobProgress({ jobId, onComplete }: JobProgressProps) {
   const getProgressPercentage = () => {
     if (currentJob.status === 'COMPLETED') return 100;
     if (currentJob.status === 'FAILED') return 0;
+    if (currentJob.status === 'PENDING') return 0;
+    // For IN_PROGRESS, use the actual progress percentage from backend
     return currentJob.progress_details?.percentage || 0;
+  };
+
+  const getProgressLabel = () => {
+    if (currentJob.status === 'PENDING') return 'Initializing video processing...';
+    if (currentJob.status === 'FAILED') return 'Processing failed';
+    if (currentJob.status === 'COMPLETED') return 'Processing complete!';
+    
+    // For IN_PROGRESS, show detailed stage information
+    const stage = currentJob.progress_details?.stage;
+    const description = currentJob.progress_details?.description;
+    
+    if (stage && description) {
+      return `${description} (${stage})`;
+    } else if (description) {
+      return description;
+    } else if (stage) {
+      return `Processing ${stage}...`;
+    }
+    
+    return 'Processing video...';
+  };
+
+  const getStageInfo = () => {
+    const percentage = getProgressPercentage();
+    if (percentage === 0 && currentJob.status === 'PENDING') {
+      return 'Step 1 of 4: Initializing';
+    } else if (percentage > 0 && percentage <= 25) {
+      return 'Step 2 of 4: Extracting audio';
+    } else if (percentage > 25 && percentage <= 50) {
+      return 'Step 3 of 4: Transcribing audio';
+    } else if (percentage > 50 && percentage < 100) {
+      return 'Step 4 of 4: Creating video clips';
+    } else if (percentage === 100) {
+      return 'All steps complete!';
+    }
+    return 'Processing...';
   };
 
   const handleDownload = (clipUrl: string, filename: string) => {
@@ -91,7 +142,7 @@ export function JobProgress({ jobId, onComplete }: JobProgressProps) {
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
               <span className="font-medium">
-                {currentJob.progress_details?.description || 'Processing...'}
+                {getProgressLabel()}
               </span>
               <span>{getProgressPercentage()}%</span>
             </div>
@@ -101,6 +152,9 @@ export function JobProgress({ jobId, onComplete }: JobProgressProps) {
                 style={{ width: `${getProgressPercentage()}%` }}
               />
             </div>
+            <p className="text-xs text-gray-600">
+              {getStageInfo()}
+            </p>
           </div>
 
           {/* Status Details */}

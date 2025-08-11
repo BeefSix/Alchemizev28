@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 import json
+import asyncio
+import time
 
 from app.db import crud, models
 from app.db.base import get_db
@@ -159,6 +162,95 @@ def get_job_by_id(
             detail=f"Failed to fetch job: {str(e)}"
         )
 
+@router.get("/{job_id}/events")
+async def get_job_events(
+    job_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user)
+):
+    """Server-Sent Events endpoint for real-time job progress updates"""
+    
+    async def event_generator():
+        last_status = None
+        last_progress = None
+        
+        while True:
+            try:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+                    
+                # Get current job status
+                job = db.query(models.Job).filter(
+                    models.Job.id == job_id,
+                    models.Job.user_id == current_user.id
+                ).first()
+                
+                if not job:
+                    yield f"event: error\ndata: {{\"error\": \"Job not found\"}}\n\n"
+                    break
+                
+                # Parse progress details
+                progress_details = {}
+                if job.progress_details:
+                    try:
+                        if isinstance(job.progress_details, str):
+                            progress_details = json.loads(job.progress_details)
+                        else:
+                            progress_details = job.progress_details
+                    except:
+                        progress_details = {}
+                
+                # Create event data
+                event_data = {
+                    "job_id": job.id,
+                    "status": job.status.lower() if job.status else "unknown",
+                    "percent": progress_details.get("percentage", 0),
+                    "stage": progress_details.get("stage", "processing"),
+                    "description": progress_details.get("description", "Processing..."),
+                    "timestamp": int(time.time())
+                }
+                
+                # Add error if job failed
+                if job.status == "FAILED" and job.error_message:
+                    event_data["error"] = job.error_message
+                
+                # Only send if status or progress changed
+                current_status = job.status
+                current_progress = progress_details.get("percentage", 0)
+                
+                if (current_status != last_status or 
+                    current_progress != last_progress or 
+                    last_status is None):
+                    
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                    last_status = current_status
+                    last_progress = current_progress
+                
+                # If job is completed or failed, send final event and close
+                if job.status in ["COMPLETED", "FAILED"]:
+                    await asyncio.sleep(1)  # Give client time to process
+                    break
+                    
+                # Wait before next check
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                yield f"event: error\ndata: {{\"error\": \"Connection error: {str(e)}\"}}\n\n"
+                break
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 @router.get("/stats")
 def get_job_stats(
     request: Request,
@@ -193,11 +285,6 @@ def get_job_stats(
             "total_jobs": total_jobs,
             "jobs_this_week": jobs_this_week,
             "success_rate": round(success_rate, 1),
-            "success_rate_change": 0,  # Would need historical data
-            "avg_processing_time": "4m 32s",  # Would need to track processing times
-            "time_change": "0s",  # Would need historical data
-            "total_data_processed": "N/A",  # Would need to track file sizes
-            "data_this_week": "N/A",  # Would need to track file sizes
             "active_jobs": active_jobs
         }
         

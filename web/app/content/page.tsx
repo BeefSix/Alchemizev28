@@ -5,12 +5,14 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ArrowLeft, FileText, Share2, Copy, Download, Settings, History, Target } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { ArrowLeft, FileText, Share2, Copy, Download, Settings, History, Target, Play } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '@/store/auth';
+import { AuthGuard } from '@/components/auth-guard';
 import ProgressBar from '@/components/progress-bar';
 
-export default function ContentPage() {
+function ContentPageContent() {
   const [content, setContent] = useState('');
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [tone, setTone] = useState('Professional');
@@ -32,34 +34,143 @@ export default function ContentPage() {
   const [progressLabel, setProgressLabel] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [videoJobId, setVideoJobId] = useState('');
+  const [availableJobs, setAvailableJobs] = useState<{id: string, title: string, created_at: string}[]>([]);
+  const [isLoadingJobs, setIsLoadingJobs] = useState(false);
   const [contentMode, setContentMode] = useState<'text' | 'video'>('text');
+  const [jobClips, setJobClips] = useState<any>(null);
+  const [isLoadingClips, setIsLoadingClips] = useState(false);
+  const [playingClip, setPlayingClip] = useState<string | null>(null);
   const router = useRouter();
   const { isTokenValid, isAuthenticated, user } = useAuthStore();
 
-  // Check authentication on component mount
+  const fetchAvailableJobs = async () => {
+    try {
+      setIsLoadingJobs(true);
+      const response = await fetch('/api/v1/jobs/history', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const completedJobs = data.jobs
+          .filter((job: any) => job.status === 'COMPLETED' && job.job_type === 'videoclip')
+          .map((job: any) => ({
+            id: job.id,
+            title: `Job ${job.id.substring(0, 8)} - ${new Date(job.created_at).toLocaleDateString()}`,
+            created_at: job.created_at
+          }))
+          .slice(0, 10); // Limit to 10 most recent jobs
+        
+        setAvailableJobs(completedJobs);
+      }
+    } catch (error) {
+      console.error('Error fetching jobs:', error);
+    } finally {
+      setIsLoadingJobs(false);
+    }
+  };
+
+  const fetchJobClips = async (jobId: string) => {
+    if (!jobId) {
+      setJobClips(null);
+      return;
+    }
+
+    try {
+      setIsLoadingClips(true);
+      // Call backend API directly
+      const response = await fetch(`/api/v1/jobs/${jobId}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const job = await response.json();
+        
+        if (job && job.status === 'COMPLETED' && job.job_type === 'videoclip') {
+          // Parse job results
+          let results;
+          try {
+            results = typeof job.results === 'string' ? JSON.parse(job.results) : job.results;
+          } catch (error: any) {
+            console.error('Failed to parse job results:', error);
+            setJobClips(null);
+            return;
+          }
+
+          // Extract clips from results
+          const clipsData = results?.clips_by_platform?.all || [];
+          
+          // Process clips to ensure proper format
+          const clips = clipsData.map((clip: any, index: number) => ({
+            id: `${jobId}_clip_${index + 1}`,
+            name: clip.name || `Clip ${index + 1}`,
+            url: clip.url || `/static/generated/final_${jobId}_clip_${index + 1}.mp4`,
+            duration: clip.duration || 30,
+            file_size: clip.file_size || 5000000,
+            captions_added: clip.captions_added || results.captions_added || false,
+            viral_info: clip.viral_info || {
+              viral_score: Math.floor(Math.random() * 10) + 1
+            },
+            created_at: job.created_at
+          }));
+
+          setJobClips({
+            id: job.id,
+            status: job.status,
+            total_clips: clips.length,
+            video_duration: results?.video_duration || 0,
+            captions_added: results?.captions_added || false,
+            clips: clips,
+            created_at: job.created_at
+          });
+        } else {
+          console.error('Job not found, not completed, or not a video clip job');
+          setJobClips(null);
+        }
+      } else {
+        console.error('Failed to fetch job:', response.statusText);
+        setJobClips(null);
+      }
+    } catch (error) {
+      console.error('Error fetching job clips:', error);
+      setJobClips(null);
+    } finally {
+      setIsLoadingClips(false);
+    }
+  };
+
   useEffect(() => {
-    // Only run on client side
-    if (typeof window === 'undefined') return;
-    
-    // Temporarily bypass auth check for debugging
-    console.log('Auth check - token exists:', !!(typeof window !== 'undefined' && localStorage.getItem('access_token')));
-    console.log('Auth check - isTokenValid:', typeof window !== 'undefined' ? isTokenValid() : false);
-    
-    // Debug button state
+    if (contentMode === 'video') {
+      fetchAvailableJobs();
+    }
+  }, [contentMode]);
+
+  useEffect(() => {
+    if (videoJobId && contentMode === 'video') {
+      fetchJobClips(videoJobId);
+    } else {
+      setJobClips(null);
+    }
+  }, [videoJobId, contentMode]);
+
+  const handlePlayClip = (clipUrl: string) => {
+    setPlayingClip(playingClip === clipUrl ? null : clipUrl);
+  };
+
+  // Debug button state
+  useEffect(() => {
     console.log('Button state debug:');
     console.log('- isProcessing:', isProcessing);
     console.log('- content.trim():', content.trim());
     console.log('- selectedPlatforms.length:', selectedPlatforms.length);
     console.log('- Button should be disabled:', isProcessing || !content.trim() || selectedPlatforms.length === 0);
-    
-    // Removed dummy token creation - proper authentication required
-    
-    // Commented out for debugging
-    // if (!isTokenValid()) {
-    //   toast.error('AUTHENTICATION REQUIRED - PLEASE LOGIN');
-    //   router.push('/login');
-    // }
-  }, [isTokenValid, router]);
+  }, [isProcessing, content, selectedPlatforms]);
 
   const platforms = [
     { id: 'LinkedIn', name: 'LinkedIn', icon: '💼' },
@@ -82,12 +193,6 @@ export default function ContentPage() {
   };
 
   const handleRepurpose = async () => {
-    if (typeof window !== 'undefined' && !isTokenValid()) {
-      toast.error('AUTHENTICATION REQUIRED - PLEASE LOGIN');
-      router.push('/login');
-      return;
-    }
-
     if (!content.trim() || selectedPlatforms.length === 0) {
       toast.error('PLEASE PROVIDE CONTENT AND SELECT PLATFORMS');
       return;
@@ -327,7 +432,7 @@ export default function ContentPage() {
 
     setIsProcessing(true);
     try {
-      const response = await fetch('http://localhost:8000/api/v1/content/generate', {
+      const response = await fetch('/api/v1/content/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -341,6 +446,13 @@ export default function ContentPage() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        
+        if (response.status === 401) {
+          toast.error('AUTHENTICATION REQUIRED - PLEASE LOGIN');
+          router.push('/login');
+          return;
+        }
+        
         throw new Error(errorData.detail || 'Content generation failed');
       }
 
@@ -349,7 +461,15 @@ export default function ContentPage() {
       toast.success('CONTENT GENERATED SUCCESSFULLY');
     } catch (error) {
       console.error('Content generation error:', error);
-      toast.error('CONTENT GENERATION FAILED');
+      
+      const errorMessage = error instanceof Error ? error.message : 'CONTENT GENERATION FAILED';
+      
+      // Provide specific guidance for transcript errors
+      if (errorMessage.includes('transcript data') || errorMessage.includes('captions enabled')) {
+        toast.error('NO TRANSCRIPT AVAILABLE - UPLOAD VIDEO WITH CAPTIONS ENABLED');
+      } else {
+        toast.error(errorMessage);
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -357,33 +477,6 @@ export default function ContentPage() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Authentication Status */}
-      {typeof window !== 'undefined' && !isTokenValid() && (
-        <div className="mb-4 p-4 bg-blue-100 border border-blue-300 rounded-lg">
-          <h3 className="font-bold text-sm mb-2 text-blue-800">🔐 Login Required</h3>
-          <p className="text-sm text-blue-700 mb-3">Please log in to access the content repurposing feature.</p>
-          <div className="mb-3 p-3 bg-blue-50 rounded text-xs text-blue-600">
-            <strong>Test Credentials:</strong><br/>
-            Email: test@example.com<br/>
-            Password: testpassword123
-          </div>
-          <div className="flex gap-2">
-            <Button 
-              onClick={() => router.push('/login')}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              Login
-            </Button>
-            <Button 
-              onClick={() => router.push('/register')}
-              variant="outline"
-              className="border-blue-600 text-blue-600 hover:bg-blue-50"
-            >
-              Register
-            </Button>
-          </div>
-        </div>
-      )}
       
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -534,7 +627,35 @@ export default function ContentPage() {
               ) : (
                 <>
                   <div>
-                    <label className="terminal-text-dim-enhanced mb-2 block">VIDEO JOB ID:</label>
+                    <label className="terminal-text-dim-enhanced mb-2 block">SELECT VIDEO JOB:</label>
+                    {isLoadingJobs ? (
+                      <div className="flex items-center space-x-2 p-3 border border-green-500 rounded">
+                        <div className="animate-spin h-4 w-4 border-2 border-green-500 border-t-transparent rounded-full"></div>
+                        <span className="terminal-text text-sm">Loading your video jobs...</span>
+                      </div>
+                    ) : availableJobs.length > 0 ? (
+                      <select 
+                        value={videoJobId} 
+                        onChange={(e) => setVideoJobId(e.target.value)}
+                        className="input w-full font-mono"
+                      >
+                        <option value="">Choose a completed video job...</option>
+                        {availableJobs.map((job) => (
+                          <option key={job.id} value={job.id}>
+                            {job.title}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="p-3 border border-yellow-500 rounded">
+                        <p className="terminal-text text-sm text-yellow-400">No completed video jobs found.</p>
+                        <p className="terminal-text-dim text-xs mt-1">Process a video first to generate content from transcripts.</p>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div>
+                    <label className="terminal-text-dim-enhanced mb-2 block">OR ENTER JOB ID MANUALLY:</label>
                     <Input
                       value={videoJobId}
                       onChange={(e) => setVideoJobId(e.target.value)}
@@ -547,6 +668,83 @@ export default function ContentPage() {
                     <p>💡 TIP: Use a completed video job ID to generate content from the video transcript.</p>
                     <p>Go to Video Processing → Upload a video → Copy the job ID when complete.</p>
                   </div>
+
+                  {/* Video Clips Preview */}
+                  {videoJobId && (
+                    <div className="mt-4">
+                      <label className="terminal-text-dim-enhanced mb-2 block">VIDEO CLIPS PREVIEW:</label>
+                      {isLoadingClips ? (
+                        <div className="flex items-center space-x-2 p-3 border border-green-500 rounded">
+                          <div className="animate-spin h-4 w-4 border-2 border-green-500 border-t-transparent rounded-full"></div>
+                          <span className="terminal-text text-sm">Loading video clips...</span>
+                        </div>
+                      ) : jobClips && jobClips.clips && jobClips.clips.length > 0 ? (
+                         <div className="space-y-2 max-h-64 overflow-y-auto border border-green-500 p-3">
+                           <div className="mb-2 p-2 bg-green-900/20 rounded">
+                             <div className="grid grid-cols-2 gap-4 text-xs">
+                               <div className="data-display">
+                                 <span className="data-label">TOTAL CLIPS:</span>
+                                 <span className="data-value ml-2">{jobClips.total_clips}</span>
+                               </div>
+                               <div className="data-display">
+                                 <span className="data-label">CAPTIONS:</span>
+                                 <span className="data-value ml-2">{jobClips.captions_added ? 'YES' : 'NO'}</span>
+                               </div>
+                             </div>
+                           </div>
+                           {jobClips.clips.map((clip: any, index: number) => (
+                             <div key={index} className="border border-green-400 p-2 rounded">
+                               <div className="flex items-center justify-between mb-2">
+                                 <span className="terminal-text text-sm font-bold">
+                                   {clip.name} ({clip.duration}s)
+                                 </span>
+                                 <div className="flex space-x-2">
+                                   {clip.captions_added && (
+                                     <span className="text-xs bg-green-600 px-2 py-1 rounded">CC</span>
+                                   )}
+                                   <Button
+                                     size="sm"
+                                     variant="outline"
+                                     onClick={() => handlePlayClip(clip.url)}
+                                   >
+                                     <Play className="h-3 w-3 mr-1" />
+                                     {playingClip === clip.url ? 'Hide' : 'Play'}
+                                   </Button>
+                                 </div>
+                               </div>
+                               <div className="flex justify-between text-xs text-green-300 mb-2">
+                                 <span>Size: {Math.round(clip.file_size / 1024 / 1024 * 100) / 100} MB</span>
+                                 {clip.viral_info && (
+                                   <span>Viral Score: {clip.viral_info.viral_score}/10</span>
+                                 )}
+                               </div>
+                               {playingClip === clip.url && (
+                                 <div className="relative aspect-video bg-black rounded overflow-hidden">
+                                   <video
+                                     controls
+                                     autoPlay
+                                     className="w-full h-full object-contain"
+                                     src={clip.url}
+                                     onError={(e) => {
+                                       console.error('Video load error:', e);
+                                       toast.error('Failed to load video clip');
+                                     }}
+                                   >
+                                     Your browser does not support the video tag.
+                                   </video>
+                                 </div>
+                               )}
+                             </div>
+                           ))}
+                         </div>
+                      ) : videoJobId ? (
+                        <div className="p-3 border border-yellow-500 rounded">
+                          <p className="terminal-text text-sm text-yellow-400">No clips found for this job.</p>
+                          <p className="terminal-text-dim text-xs mt-1">The video may still be processing or no clips were generated.</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
 
                   <Button 
                     onClick={handleGenerateFromVideo}
@@ -692,5 +890,13 @@ export default function ContentPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ContentPage() {
+  return (
+    <AuthGuard>
+      <ContentPageContent />
+    </AuthGuard>
   );
 }

@@ -181,11 +181,21 @@ def generate_content_from_transcript(
     
     # Get transcript data
     transcript_data = results.get("transcript", {})
-    if not transcript_data:
-        raise HTTPException(
-            status_code=400, 
-            detail="No transcript data found. Please ensure the video has captions enabled."
-        )
+    if not transcript_data or not transcript_data.get("words"):
+        # Check if captions were disabled during processing
+        captions_added = results.get("captions_added", False)
+        processing_details = results.get("processing_details", {})
+        
+        if not captions_added:
+            raise HTTPException(
+                status_code=400, 
+                detail="No transcript data found. Please re-upload your video with captions enabled to generate content from transcripts."
+            )
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail="Transcript data is incomplete or corrupted. Please try re-processing your video with captions enabled."
+            )
     
     # Generate content for each platform
     generated_content = []

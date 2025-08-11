@@ -1,4 +1,4 @@
-@tailwind base;
+@import 'tailwindcss/base';
 @tailwind components;
 @import 'tailwindcss/utilities';
 
@@ -538,7 +538,9 @@
   }
 
   .data-value {
-    @apply text-green-400 font-bold text-base;
+    color: #68d391;
+    font-weight: bold;
+    font-size: 1rem;
   }
 
   /* Terminal Text Effects */
@@ -659,8 +661,8 @@
   }
 
   .alien-league-title-orange-aura {
-    font-family: 'Alien League Gradient', 'Alien League', 'Orbitron', monospace;
-    color: #ff6600;
+    font-family: 'Alien Ravager', monospace;
+    color: #000000;
     font-size: 2rem;
     font-weight: bold;
     text-shadow: 

@@ -101,7 +101,6 @@ export interface VideoUploadForm {
   file: File;
   add_captions: boolean;
   aspect_ratio: '9:16' | '1:1' | '16:9';
-  platforms: string[];
 }
 
 export interface ApiResponse<T = any> {

@@ -64,7 +64,7 @@ class FileSecurityValidator:
         self.upload_dir = Path("uploads")
         self.upload_dir.mkdir(exist_ok=True)
     
-    async def validate_upload(self, file: UploadFile, user_id: Optional[str] = None, file_type: str = 'video', skip_mime_validation: bool = False) -> Dict[str, Any]:
+    async def validate_upload(self, file: UploadFile, user_id: Optional[str] = None, file_type: str = 'video', skip_mime_validation: bool = False, skip_user_limits: bool = False) -> Dict[str, Any]:
         """Enhanced comprehensive file validation with security checks
         
         Returns:
@@ -159,8 +159,8 @@ class FileSecurityValidator:
             if self._has_path_traversal(file.filename):
                 return {'valid': False, 'error': 'Filename contains invalid path characters'}
             
-            # 10. User-specific rate limiting (if user_id provided)
-            if user_id and not await self._check_user_limits(user_id, file_size):
+            # 10. User-specific rate limiting (if user_id provided and not skipped)
+            if user_id and not skip_user_limits and not await self._check_user_limits(user_id, file_size):
                 return {'valid': False, 'error': f'Upload limit exceeded. Max {settings.MAX_FILES_PER_USER_PER_DAY} files per day.'}
             
             # Reset file position for subsequent reads
@@ -260,9 +260,22 @@ class FileSecurityValidator:
     async def _check_user_limits(self, user_id: str, file_size: int) -> bool:
         """Check user upload limits (daily files and total size)"""
         try:
-            # This would typically check against a database
-            # For now, we'll implement a simple file-based check
+            # Check user's subscription plan from database
+            from app.db.base import get_db
+            from app.db import crud
             
+            db = next(get_db())
+            try:
+                user = crud.get_user(db, user_id=int(user_id))
+                if user and user.subscription_plan == 'enterprise':
+                    # Enterprise users have unlimited uploads
+                    return True
+            except Exception as db_error:
+                logger.error(f"Error checking user subscription: {db_error}")
+            finally:
+                db.close()
+            
+            # For non-enterprise users, check file-based limits
             from datetime import datetime, timedelta
             import json
             

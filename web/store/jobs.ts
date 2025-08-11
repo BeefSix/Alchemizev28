@@ -14,10 +14,10 @@ interface JobsState {
 interface JobsActions {
   fetchJobs: () => Promise<void>;
   fetchJob: (jobId: string) => Promise<void>;
-  createVideoJob: (file: File, options: {
+  createVideoJob: (uploadData: {
+    file: File;
     add_captions: boolean;
     aspect_ratio: '9:16' | '1:1' | '16:9';
-    platforms: string[];
   }) => Promise<string>;
   subscribeToJobEvents: (jobId: string) => void;
   unsubscribeFromJobEvents: () => void;
@@ -52,11 +52,21 @@ export const useJobsStore = create<JobsStore>((set, get) => ({
   },
 
   fetchJob: async (jobId: string) => {
+    console.log('🔍 JobsStore: Fetching job with ID:', jobId);
     set({ isLoading: true, error: null });
     try {
       const job = await apiClient.getJob(jobId);
+      console.log('🔍 JobsStore: Received job data:', job);
+      console.log('🔍 JobsStore: Job status:', job?.status);
+      console.log('🔍 JobsStore: Has results:', !!job?.results);
+      if (job?.results) {
+        console.log('🔍 JobsStore: Results structure:', Object.keys(job.results));
+        const clips = job.results.clips_by_platform?.all || [];
+        console.log('🔍 JobsStore: Number of clips found:', clips.length);
+      }
       set({ currentJob: job, isLoading: false });
     } catch (error) {
+      console.error('🔍 JobsStore: Error fetching job:', error);
       set({
         isLoading: false,
         error: error instanceof Error ? error.message : 'Failed to fetch job',
@@ -64,20 +74,17 @@ export const useJobsStore = create<JobsStore>((set, get) => ({
     }
   },
 
-  createVideoJob: async (file: File, options) => {
+  createVideoJob: async (uploadData) => {
     set({ isUploading: true, uploadProgress: 0, error: null });
     
     try {
       // Upload file in chunks with progress tracking
-      const filePath = await apiClient.uploadFileInChunks(file, (progress) => {
+      const filePath = await apiClient.uploadFileInChunks(uploadData.file, (progress) => {
         set({ uploadProgress: progress });
       });
 
       // Create video job
-      const { job_id } = await apiClient.createVideoJob({
-        file,
-        ...options,
-      });
+      const { job_id } = await apiClient.createVideoJob(uploadData);
 
       set({ isUploading: false, uploadProgress: 100 });
       

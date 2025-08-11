@@ -194,14 +194,13 @@ async def get_user_stats(
                 models.Job.job_type == 'content_generation'
             ).count()
             
-            # Calculate storage usage (simplified - would need actual file size tracking)
-            # For now, estimate based on job count
-            estimated_storage = total_videos * 50.0  # Estimate 50MB per video job
+            # Storage usage calculation would require actual file size tracking
+            # Setting to 0 until proper file size tracking is implemented
             
             stats = UserStats(
                 total_videos_processed=total_videos,
                 total_content_generated=total_content,
-                storage_used_mb=estimated_storage,
+                storage_used_mb=0.0,  # Requires actual file size tracking
                 account_age_days=account_age
             )
         except Exception as calc_error:

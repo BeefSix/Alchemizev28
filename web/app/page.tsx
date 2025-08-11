@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuthStore } from '@/store/auth';
 import { useJobsStore } from '@/store/jobs';
+import { apiClient } from '@/lib/api';
 import { 
   Video, 
   FileText, 
@@ -17,7 +18,8 @@ import {
   Download,
   Terminal,
   Activity,
-  Zap
+  Zap,
+  Film
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import Link from 'next/link';
@@ -26,6 +28,8 @@ export default function HomePage() {
   const { user, isAuthenticated, logout, checkAuth } = useAuthStore();
   const { jobs, fetchJobs, isLoading } = useJobsStore();
   const router = useRouter();
+  const [stats, setStats] = useState<any>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -33,8 +37,27 @@ export default function HomePage() {
     }
     if (isAuthenticated) {
       fetchJobs();
+      fetchStats();
     }
   }, [isAuthenticated, checkAuth, fetchJobs]);
+
+  const fetchStats = async () => {
+    try {
+      setStatsLoading(true);
+      const statsData = await apiClient.getJobStats();
+      setStats(statsData);
+    } catch (error) {
+      console.warn('Stats not available, using fallback values:', error);
+      // Provide fallback stats for new users or when API fails
+      setStats({
+        total_jobs: 0,
+        success_rate: 0,
+        active_jobs: 0
+      });
+    } finally {
+      setStatsLoading(false);
+    }
+  };
 
   const handleLogout = async () => {
     try {
@@ -80,6 +103,15 @@ export default function HomePage() {
       primary: true
     },
     {
+      id: 'clips',
+      title: 'SOCIAL MEDIA CLIPS',
+      description: 'Ready-to-share content',
+      icon: Film,
+      color: 'text-orange-400',
+      href: '/clips',
+      primary: true
+    },
+    {
       id: 'content',
       title: 'CONTENT REPURPOSE',
       description: 'Multi-platform optimization',
@@ -95,7 +127,7 @@ export default function HomePage() {
       color: 'text-purple-400',
       href: '/payment'
     }
-  ];
+   ];
 
   const recentJobs = jobs.slice(0, 3);
 
@@ -120,7 +152,7 @@ export default function HomePage() {
       </div>
 
       {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {quickActions.map((action) => (
           <Link key={action.id} href={action.href}>
             <Card className={`cursor-pointer hover:border-green-400 transition-colors ${action.primary ? 'border-green-400' : ''}`}>
@@ -156,16 +188,38 @@ export default function HomePage() {
             ) : recentJobs.length > 0 ? (
               <div className="space-y-3">
                 {recentJobs.map((job, index) => (
-                  <div key={job.id || `job-${index}`} className="border border-green-500 p-3">
+                  <div 
+                    key={job.id || `job-${index}`} 
+                    className="border border-green-500 p-3 cursor-pointer hover:border-green-400 hover:bg-green-500/5 transition-colors"
+                    onClick={() => {
+                      if (job.id) {
+                        router.push(`/video?job=${job.id}`);
+                      }
+                    }}
+                  >
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="font-digital text-sm text-green-400">JOB-{job.id ? job.id.slice(0, 8) : 'UNKNOWN'}</div>
                         <div className="text-xs text-green-600 mt-1">
                           {job.status || 'UNKNOWN'} | {job.created_at ? new Date(job.created_at).toLocaleDateString() : 'N/A'}
                         </div>
+                        {job.status === 'COMPLETED' && (
+                          <div className="text-xs text-green-400 mt-1 font-semibold">
+                            ✅ CLIPS READY - CLICK TO VIEW
+                          </div>
+                        )}
                       </div>
                       <div className="flex space-x-2">
-                        <Button size="sm" variant="outline">
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (job.id) {
+                              router.push(`/video?job=${job.id}`);
+                            }
+                          }}
+                        >
                           <Play className="h-3 w-3" />
                         </Button>
                         <Button size="sm" variant="outline">
@@ -233,25 +287,39 @@ export default function HomePage() {
         </Card>
       </div>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="border border-green-500 p-4 text-center">
-          <div className="terminal-text-bold text-2xl">24</div>
-          <div className="terminal-text-dim text-xs">TOTAL JOBS</div>
+      {/* Real Stats */}
+      {stats && !statsLoading && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="border border-green-500 p-4 text-center">
+            <div className="terminal-text-bold text-2xl">{stats.total_jobs}</div>
+            <div className="terminal-text-dim text-xs">TOTAL JOBS</div>
+          </div>
+          <div className="border border-green-500 p-4 text-center">
+            <div className="terminal-text-bold text-2xl">{stats.success_rate}%</div>
+            <div className="terminal-text-dim text-xs">SUCCESS RATE</div>
+          </div>
+          <div className="border border-green-500 p-4 text-center">
+            <div className="terminal-text-bold text-2xl">{stats.active_jobs}</div>
+            <div className="terminal-text-dim text-xs">ACTIVE JOBS</div>
+          </div>
         </div>
-        <div className="border border-green-500 p-4 text-center">
-          <div className="terminal-text-bold text-2xl">120</div>
-          <div className="terminal-text-dim text-xs">CLIPS GENERATED</div>
+      )}
+      {statsLoading && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="border border-green-500 p-4 text-center">
+            <div className="terminal-text-bold text-2xl">--</div>
+            <div className="terminal-text-dim text-xs">LOADING...</div>
+          </div>
+          <div className="border border-green-500 p-4 text-center">
+            <div className="terminal-text-bold text-2xl">--</div>
+            <div className="terminal-text-dim text-xs">LOADING...</div>
+          </div>
+          <div className="border border-green-500 p-4 text-center">
+            <div className="terminal-text-bold text-2xl">--</div>
+            <div className="terminal-text-dim text-xs">LOADING...</div>
+          </div>
         </div>
-        <div className="border border-green-500 p-4 text-center">
-          <div className="terminal-text-bold text-2xl">8K</div>
-          <div className="terminal-text-dim text-xs">MAX QUALITY</div>
-        </div>
-        <div className="border border-green-500 p-4 text-center">
-          <div className="terminal-text-bold text-2xl">99.9%</div>
-          <div className="terminal-text-dim text-xs">UPTIME</div>
-        </div>
-      </div>
+      )}
 
       {/* Footer */}
       <div className="border-t border-green-500 pt-4">

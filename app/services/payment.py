@@ -37,8 +37,8 @@ class PaymentService:
                 "name": "Enterprise",
                 "price": 99.99,
                 "stripe_price_id": "price_enterprise_monthly",  # Replace with actual Stripe price ID
-                "video_credits": 500,
-                "magic_commands": 5000,
+                "video_credits": -1,  # -1 means unlimited
+                "magic_commands": -1,  # -1 means unlimited
                 "features": ["4K video processing", "Custom branding", "Unlimited videos", "API access", "Dedicated support"]
             }
         }
@@ -70,13 +70,23 @@ class PaymentService:
         user_plan = getattr(user, 'subscription_plan', 'free') or 'free'
         plan_info = self.plans.get(user_plan, self.plans['free'])
         
+        # Calculate remaining credits (unlimited if plan has -1)
+        video_credits_remaining = (
+            float('inf') if plan_info['video_credits'] == -1 
+            else max(0, plan_info['video_credits'] - video_jobs_count)
+        )
+        magic_commands_remaining = (
+            float('inf') if plan_info['magic_commands'] == -1 
+            else max(0, plan_info['magic_commands'] - magic_usage)
+        )
+        
         return {
             "plan": user_plan,
             "plan_info": plan_info,
             "video_credits_used": video_jobs_count,
-            "video_credits_remaining": max(0, plan_info['video_credits'] - video_jobs_count),
+            "video_credits_remaining": video_credits_remaining,
             "magic_commands_used": magic_usage,
-            "magic_commands_remaining": max(0, plan_info['magic_commands'] - magic_usage)
+            "magic_commands_remaining": magic_commands_remaining
         }
     
     def check_usage_limits(self, db: Session, user_id: int, operation: str) -> bool:
@@ -84,11 +94,32 @@ class PaymentService:
         user_plan = self.get_user_plan(db, user_id)
         
         if operation == "video_processing":
+            # Enterprise users have unlimited access (float('inf') > 0 is True)
             return user_plan['video_credits_remaining'] > 0
         elif operation == "magic_command":
+            # Enterprise users have unlimited access (float('inf') > 0 is True)
             return user_plan['magic_commands_remaining'] > 0
         
         return True
+    
+    def deduct_usage(self, db: Session, user_id: int, operation: str, quantity: int = 1) -> bool:
+        """Record usage for tracking purposes"""
+        try:
+            # Create usage log entry using existing model structure
+            usage_log = models.UsageLog(
+                user_id=user_id,
+                model="payment_service",  # Use a generic model name for payment service operations
+                operation=operation,
+                cost=0.0  # Set cost to 0 for now, can be updated later if needed
+            )
+            db.add(usage_log)
+            db.commit()
+            logger.info(f"Recorded usage: user_id={user_id}, operation={operation}, quantity={quantity}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to record usage: {e}")
+            db.rollback()
+            return False
     
     def create_checkout_session(self, plan: str, user_email: str, success_url: str, cancel_url: str) -> Optional[str]:
         """Create Stripe checkout session"""

@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useState, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { VideoUpload } from '@/components/video-upload';
@@ -18,7 +18,19 @@ function VideoPageContent() {
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
   const [contentResults, setContentResults] = useState<any[]>([]);
   const [isGeneratingContent, setIsGeneratingContent] = useState(false);
+  const [jobData, setJobData] = useState<any>(null);
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Check for job parameter in URL and load existing job
+  useEffect(() => {
+    const jobParam = searchParams.get('job');
+    if (jobParam) {
+      setCurrentJobId(jobParam);
+      setCurrentStep(2); // Start at processing step
+      toast.success('LOADING EXISTING JOB...');
+    }
+  }, [searchParams]);
 
   const platforms = [
     { id: 'LinkedIn', name: 'LinkedIn', icon: '💼' },
@@ -37,6 +49,7 @@ function VideoPageContent() {
 
   const handleJobComplete = (job: VideoClipJob) => {
     setCurrentStep(3);
+    setJobData(job);
     toast.success(`AI PROCESSING COMPLETE: ${job.results?.total_clips || 0} CLIPS READY`);
   };
 
@@ -79,6 +92,23 @@ function VideoPageContent() {
     );
   };
 
+  const fetchJobData = async (jobId: string) => {
+    try {
+      const response = await fetch(`http://localhost:8001/api/v1/jobs/${jobId}`, {
+        headers: {
+          'Authorization': `Bearer ${typeof window !== 'undefined' ? localStorage.getItem('access_token') : ''}`,
+        },
+      });
+      
+      if (response.ok) {
+        const job = await response.json();
+        setJobData(job);
+      }
+    } catch (error) {
+      console.error('Failed to fetch job data:', error);
+    }
+  };
+
   const handleGenerateContent = async () => {
     if (selectedPlatforms.length === 0) {
       toast.error('PLEASE SELECT AT LEAST ONE PLATFORM');
@@ -94,6 +124,9 @@ function VideoPageContent() {
     setCurrentStep(6);
     
     try {
+      // Fetch job data to get clips
+      await fetchJobData(currentJobId);
+      
       // Use real content generation API
       toast.success('GENERATING CONTENT FROM TRANSCRIPTS');
       
@@ -111,6 +144,14 @@ function VideoPageContent() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        
+        if (response.status === 401) {
+          toast.error('AUTHENTICATION REQUIRED - PLEASE LOGIN');
+          // Redirect to login page
+          window.location.href = '/login';
+          return;
+        }
+        
         throw new Error(errorData.detail || 'Content generation failed');
       }
 
@@ -119,10 +160,15 @@ function VideoPageContent() {
       toast.success('CONTENT GENERATED FROM TRANSCRIPTS');
     } catch (error) {
       console.error('Content generation error:', error);
-      toast.error(error instanceof Error ? error.message : 'CONTENT GENERATION FAILED');
       
-      // Show error instead of fake demo content
-      toast.error('CONTENT GENERATION FAILED - PLEASE TRY AGAIN');
+      const errorMessage = error instanceof Error ? error.message : 'CONTENT GENERATION FAILED';
+      
+      // Provide specific guidance for transcript errors
+      if (errorMessage.includes('transcript data') || errorMessage.includes('captions enabled')) {
+        toast.error('NO TRANSCRIPT AVAILABLE - UPLOAD VIDEO WITH CAPTIONS ENABLED');
+      } else {
+        toast.error(errorMessage);
+      }
     } finally {
       setIsGeneratingContent(false);
     }
@@ -133,7 +179,15 @@ function VideoPageContent() {
     toast.success('CONTENT COPIED TO CLIPBOARD');
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
+    if (currentJobId && !jobData) {
+      await fetchJobData(currentJobId);
+    }
+    
+    if (currentStep === 5) {
+      setCurrentStep(6);
+    }
+    
     toast.success('DOWNLOADING ENHANCED CLIPS');
     // Simulate download
   };
@@ -473,7 +527,88 @@ function VideoPageContent() {
                   ))}
                 </div>
 
-                <div className="space-y-3">
+                {/* Video Clips Section */}
+                {jobData && jobData.results && jobData.results.clips && (
+                  <div className="mt-8">
+                    <div className="border-t border-green-500 pt-6">
+                      <h3 className="terminal-text-bold text-lg mb-4 flex items-center">
+                        <Video className="mr-2 h-5 w-5" />
+                        ENHANCED VIDEO CLIPS ({jobData.results.clips.length})
+                      </h3>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {jobData.results.clips.map((clip: any, index: number) => (
+                          <div key={index} className="border border-green-500 p-4">
+                            <div className="aspect-video bg-black border border-green-500 mb-3 relative overflow-hidden">
+                              <video 
+                                controls 
+                                className="w-full h-full object-cover"
+                                poster={clip.thumbnail_url}
+                              >
+                                <source src={clip.video_url} type="video/mp4" />
+                                Your browser does not support the video tag.
+                              </video>
+                            </div>
+                            
+                            <div className="space-y-2">
+                              <div className="data-display">
+                                <span className="data-label">CLIP:</span>
+                                <span className="data-value ml-2">{index + 1}</span>
+                              </div>
+                              
+                              <div className="data-display">
+                                <span className="data-label">DURATION:</span>
+                                <span className="data-value ml-2">{clip.duration || 'N/A'}s</span>
+                              </div>
+                              
+                              <div className="data-display">
+                                <span className="data-label">START TIME:</span>
+                                <span className="data-value ml-2">{clip.start_time || 'N/A'}s</span>
+                              </div>
+                              
+                              {clip.transcript && (
+                                <div className="border border-green-500 p-2 mt-2">
+                                  <div className="data-label text-xs mb-1">TRANSCRIPT:</div>
+                                  <p className="terminal-text text-xs">{clip.transcript}</p>
+                                </div>
+                              )}
+                              
+                              <div className="flex space-x-2 mt-3">
+                                <Button 
+                                  size="sm" 
+                                  variant="outline"
+                                  onClick={() => {
+                                    const link = document.createElement('a');
+                                    link.href = clip.video_url;
+                                    link.download = `clip_${index + 1}.mp4`;
+                                    link.click();
+                                  }}
+                                >
+                                  <Download className="h-3 w-3 mr-1" />
+                                  DOWNLOAD
+                                </Button>
+                                
+                                <Button 
+                                  size="sm" 
+                                  variant="outline"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(clip.video_url);
+                                    toast.success('CLIP URL COPIED');
+                                  }}
+                                >
+                                  <Copy className="h-3 w-3 mr-1" />
+                                  COPY URL
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-col items-center space-y-3">
                   <Button 
                     onClick={handleDownload}
                     className="w-full max-w-md"
@@ -492,6 +627,88 @@ function VideoPageContent() {
                     PROCESS ANOTHER VIDEO
                   </Button>
                 </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Video Clips Display - Show after clips are ready (step 3+) */}
+        {currentStep >= 3 && jobData && jobData.results && jobData.results.clips && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="alien-league-title flex items-center">
+                <Video className="mr-2 h-6 w-6" />
+                YOUR VIDEO CLIPS ({jobData.results.clips.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {jobData.results.clips.map((clip: any, index: number) => (
+                  <div key={index} className="border border-green-500 p-4">
+                    <div className="aspect-video bg-black border border-green-500 mb-3 relative overflow-hidden">
+                      <video 
+                        controls 
+                        className="w-full h-full object-cover"
+                        poster={clip.thumbnail_url}
+                      >
+                        <source src={clip.video_url} type="video/mp4" />
+                        Your browser does not support the video tag.
+                      </video>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <div className="data-display">
+                        <span className="data-label">CLIP:</span>
+                        <span className="data-value ml-2">{index + 1}</span>
+                      </div>
+                      
+                      <div className="data-display">
+                        <span className="data-label">DURATION:</span>
+                        <span className="data-value ml-2">{clip.duration || 'N/A'}s</span>
+                      </div>
+                      
+                      <div className="data-display">
+                        <span className="data-label">START TIME:</span>
+                        <span className="data-value ml-2">{clip.start_time || 'N/A'}s</span>
+                      </div>
+                      
+                      {clip.transcript && (
+                        <div className="border border-green-500 p-2 mt-2">
+                          <div className="data-label text-xs mb-1">TRANSCRIPT:</div>
+                          <p className="terminal-text text-xs">{clip.transcript}</p>
+                        </div>
+                      )}
+                      
+                      <div className="flex space-x-2 mt-3">
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          onClick={() => {
+                            const link = document.createElement('a');
+                            link.href = clip.video_url;
+                            link.download = `clip_${index + 1}.mp4`;
+                            link.click();
+                          }}
+                        >
+                          <Download className="h-3 w-3 mr-1" />
+                          DOWNLOAD
+                        </Button>
+                        
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          onClick={() => {
+                            navigator.clipboard.writeText(clip.video_url);
+                            toast.success('CLIP URL COPIED');
+                          }}
+                        >
+                          <Copy className="h-3 w-3 mr-1" />
+                          COPY URL
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </CardContent>
           </Card>

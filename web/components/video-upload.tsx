@@ -18,7 +18,6 @@ export function VideoUpload({ onJobCreated }: VideoUploadProps) {
   const [uploadOptions, setUploadOptions] = useState({
     add_captions: true,
     aspect_ratio: '9:16' as '9:16' | '1:1' | '16:9',
-    platforms: ['TikTok', 'Instagram'] as string[],
   });
 
   const { createVideoJob, isUploading, uploadProgress, error } = useJobsStore();
@@ -66,7 +65,11 @@ export function VideoUpload({ onJobCreated }: VideoUploadProps) {
     if (!selectedFile) return;
 
     try {
-      const jobId = await createVideoJob(selectedFile, uploadOptions);
+      const uploadData = {
+        file: selectedFile,
+        ...uploadOptions
+      };
+      const jobId = await createVideoJob(uploadData);
       toast.success('Video processing started!');
       onJobCreated?.(jobId);
       setSelectedFile(null);
@@ -92,14 +95,7 @@ export function VideoUpload({ onJobCreated }: VideoUploadProps) {
     }
   };
 
-  const togglePlatform = (platform: string) => {
-    setUploadOptions(prev => ({
-      ...prev,
-      platforms: prev.platforms.includes(platform)
-        ? prev.platforms.filter(p => p !== platform)
-        : [...prev.platforms, platform],
-    }));
-  };
+
 
 
 
@@ -164,15 +160,27 @@ export function VideoUpload({ onJobCreated }: VideoUploadProps) {
           {isUploading && (
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
-                <span>Uploading...</span>
+                <span className="font-medium text-blue-600">
+                  {uploadProgress < 100 ? 'Uploading file...' : 'Upload complete - Starting video processing...'}
+                </span>
                 <span>{uploadProgress}%</span>
               </div>
               <div className="progress-bar">
                 <div
-                  className="progress-bar-fill"
+                  className="progress-bar-fill bg-blue-500"
                   style={{ width: `${uploadProgress}%` }}
                 />
               </div>
+              {uploadProgress < 100 && (
+                <p className="text-xs text-gray-600">
+                  Step 1 of 4: Uploading your video file
+                </p>
+              )}
+              {uploadProgress === 100 && (
+                <p className="text-xs text-green-600">
+                  ✓ Upload complete! Video processing will begin shortly...
+                </p>
+              )}
             </div>
           )}
         </CardContent>
@@ -236,25 +244,7 @@ export function VideoUpload({ onJobCreated }: VideoUploadProps) {
               </div>
             </div>
 
-            {/* Platforms */}
-            <div className="space-y-3">
-              <label className="block font-medium">Target Platforms</label>
-              <div className="flex flex-wrap gap-2">
-                {['TikTok', 'Instagram', 'YouTube'].map((platform) => (
-                  <button
-                    key={platform}
-                    onClick={() => togglePlatform(platform)}
-                    className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
-                      uploadOptions.platforms.includes(platform)
-                        ? 'bg-primary-100 text-primary-700 border border-primary-200'
-                        : 'bg-black text-green-400 border border-green-500 hover:bg-gray-900'
-                    }`}
-                  >
-                    {platform}
-                  </button>
-                ))}
-              </div>
-            </div>
+
 
             {/* Upload Button */}
             <Button

@@ -69,6 +69,11 @@ static_dir = settings.STATIC_FILES_ROOT_DIR
 os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+# Also mount the data/static directory if it exists (for Docker compatibility)
+data_static_dir = "data/static"
+if os.path.exists(data_static_dir):
+    app.mount("/data-static", StaticFiles(directory=data_static_dir), name="data-static")
+
 # Health check endpoint
 @app.get("/health", tags=["health"])
 async def health_check():

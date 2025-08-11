@@ -4,7 +4,7 @@ import subprocess
 import json
 import logging
 from typing import Dict, List, Any
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
 from app.core.config import settings
 from app.services import firebase_utils
@@ -78,7 +78,7 @@ def get_duration(video_path: str) -> float:
         return 60.0
 
 def create_improved_karaoke_ass(words_data, output_path, start_offset, clip_duration):
-    """Creates karaoke-style ASS subtitles optimized for your content"""
+    """Creates single-word yellow captions at bottom center"""
     if not words_data:
         logger.warning("No words data provided for captions")
         return False
@@ -97,59 +97,46 @@ def create_improved_karaoke_ass(words_data, output_path, start_offset, clip_dura
             return False
 
         with open(output_path, 'w', encoding='utf-8') as f:
-            # High-quality ASS styling optimized for social media
+            # ASS styling for single word yellow captions at bottom center
             f.write("""[Script Info]
-Title: Zuexis Pro Karaoke Captions
+Title: Single Word Yellow Captions
 ScriptType: v4.00+
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Karaoke,Arial Black,44,&H00FFFF00,&H00FF6600,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,50,1
+Style: SingleWord,Arial Black,32,&H0000FFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,10,10,120,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """)
             
-            # Optimized phrase grouping for better readability
-            phrase_length = 3 if len(clip_words) > 20 else 4
-            
-            for i in range(0, len(clip_words), phrase_length):
-                phrase_words = clip_words[i:i + phrase_length]
-                if not phrase_words:
+            # Create individual word captions
+            for word in clip_words:
+                word_text = word.get('word', '').strip().upper()
+                if not word_text:
                     continue
                 
                 # Calculate timing relative to clip start
-                phrase_start = phrase_words[0].get('start', 0) - start_offset
-                phrase_end = phrase_words[-1].get('end', phrase_start + 2) - start_offset
+                word_start = word.get('start', 0) - start_offset
+                word_end = word.get('end', word_start + 0.5) - start_offset
                 
                 # Ensure times are within clip bounds
-                phrase_start = max(0, min(phrase_start, clip_duration))
-                phrase_end = max(phrase_start + 0.5, min(phrase_end, clip_duration))
+                word_start = max(0, min(word_start, clip_duration))
+                word_end = max(word_start + 0.3, min(word_end, clip_duration))
                 
-                # Build karaoke text with improved timing
-                karaoke_text = ""
-                for j, word in enumerate(phrase_words):
-                    word_text = word.get('word', '').strip().upper()
-                    if not word_text:
-                        continue
-                        
-                    word_duration = max(0.4, word.get('end', 0) - word.get('start', 0))
-                    timing_centiseconds = int(word_duration * 100)
-                    
-                    if j > 0:
-                        karaoke_text += " "
-                    karaoke_text += f"{{\\k{timing_centiseconds}}}{word_text}"
+                # Skip if word is outside clip duration
+                if word_start >= clip_duration:
+                    continue
                 
-                if karaoke_text:
-                    start_str = format_ass_time(phrase_start)
-                    end_str = format_ass_time(phrase_end)
-                    f.write(f"Dialogue: 0,{start_str},{end_str},Karaoke,,0,0,0,karaoke,{karaoke_text}\n")
+                start_str = format_ass_time(word_start)
+                end_str = format_ass_time(word_end)
+                f.write(f"Dialogue: 0,{start_str},{end_str},SingleWord,,0,0,0,,{word_text}\n")
         
-        logger.info(f"🎤 Created karaoke ASS file: {len(clip_words)} words")
+        logger.info(f"🎤 Created single-word captions: {len(clip_words)} words")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to create karaoke ASS file: {e}")
+        logger.error(f"Failed to create single-word captions: {e}")
         return False
 
 def format_ass_time(seconds):
@@ -256,7 +243,11 @@ def process_single_clip_gpu(
 
         # Return success with local URL
         filename = os.path.basename(final_clip_path)
-        local_url = f"/static/generated/{filename}"
+        # Use correct URL path based on actual storage location
+        if settings.STATIC_GENERATED_DIR.startswith("/app/data/static/generated") or "data/static/generated" in settings.STATIC_GENERATED_DIR:
+            local_url = f"/data-static/generated/{filename}"
+        else:
+            local_url = f"/static/generated/{filename}"
         
         logger.info(f"✅ GPU clip success {clip_id}: {file_size:,}B, captions: {caption_added}")
         
@@ -328,6 +319,105 @@ def process_clips_parallel(
     
     logger.info(f"🎉 Parallel processing complete: {sum(1 for r in results if r.get('success'))} successful clips")
     return results
+
+
+def process_clips_parallel_with_progress(
+    source_video_path: str,
+    moments: List[Dict],
+    flags: Dict[str, Any],
+    user_id: int,
+    job_id: str,
+    words_data: List[Dict]
+) -> List[Dict[str, Any]]:
+    """Process multiple clips with detailed progress updates"""
+    from app.db.base import get_db_session
+    from app.db import crud
+    
+    results = []
+    total_clips = len(moments)
+    
+    if not FFMPEG_CONFIG.get('parallel_encode', False):
+        # Sequential processing with progress updates
+        logger.info(f"🔄 Using sequential processing with progress updates for {total_clips} clips")
+        
+        for i, moment in enumerate(moments):
+            # Update progress before processing each clip
+            progress = 60 + (i / total_clips) * 30  # 60-90%
+            with get_db_session() as db:
+                crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                    progress_details={
+                        "description": f"Processing clip {i+1}/{total_clips} - {moment['start']:.1f}s duration...", 
+                        "percentage": progress
+                    })
+            
+            clip_id = f"{job_id}_clip_{i+1}"
+            logger.info(f"🎬 Processing clip {i+1}/{total_clips} at {moment['start']:.1f}s")
+            
+            result = process_single_clip_gpu(source_video_path, moment, flags, user_id, clip_id, words_data)
+            results.append(result)
+            
+            if result.get('success'):
+                logger.info(f"✅ Clip {i+1} completed successfully")
+            else:
+                logger.error(f"❌ Clip {i+1} failed: {result.get('error', 'Unknown error')}")
+        
+        return results
+    
+    # Parallel processing with progress monitoring
+    logger.info(f"🚀 Using parallel GPU processing with progress updates for {total_clips} clips")
+    
+    def process_clip_wrapper(args):
+        source_path, moment, flags, user_id, clip_id, words_data = args
+        return process_single_clip_gpu(source_path, moment, flags, user_id, clip_id, words_data)
+    
+    # Use 2-3 parallel workers max to avoid overwhelming GPU memory
+    max_workers = min(3, total_clips)
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        clip_args = [
+            (source_video_path, moment, flags, user_id, f"{job_id}_clip_{i+1}", words_data)
+            for i, moment in enumerate(moments)
+        ]
+        
+        # Submit all tasks
+        future_to_index = {executor.submit(process_clip_wrapper, args): i for i, args in enumerate(clip_args)}
+        completed = 0
+        
+        # Process results as they complete
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            completed += 1
+            
+            # Update progress
+            progress = 60 + (completed / total_clips) * 30  # 60-90%
+            with get_db_session() as db:
+                crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                    progress_details={
+                        "description": f"Completed {completed}/{total_clips} clips...", 
+                        "percentage": progress
+                    })
+            
+            try:
+                result = future.result()
+                results.append((index, result))
+                
+                if result.get('success'):
+                    logger.info(f"✅ Clip {index+1} completed successfully")
+                else:
+                    logger.error(f"❌ Clip {index+1} failed: {result.get('error', 'Unknown error')}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Clip {index+1} processing exception: {e}")
+                results.append((index, {'success': False, 'error': str(e)}))
+    
+    # Sort results by original order
+    results.sort(key=lambda x: x[0])
+    final_results = [result[1] for result in results]
+    
+    successful_count = sum(1 for r in final_results if r.get('success'))
+    logger.info(f"🎉 Parallel processing complete: {successful_count}/{total_clips} successful clips")
+    
+    return final_results
 
 # Legacy function name for compatibility
 def process_single_clip(*args, **kwargs):
@@ -407,7 +497,11 @@ class StableDiffusionGenerator:
                     pass
                 return firebase_url
             else:
-                return f"/static/generated/{filename}"
+                # Use correct URL path based on actual storage location
+                if settings.STATIC_GENERATED_DIR.startswith("/app/data/static/generated") or "data/static/generated" in settings.STATIC_GENERATED_DIR:
+                    return f"/data-static/generated/{filename}"
+                else:
+                    return f"/static/generated/{filename}"
                 
         except Exception as e:
             logger.error(f"❌ GPU image generation failed: {e}")
@@ -427,6 +521,13 @@ def process_video_sync(
     """Synchronous video processing for when Redis/Celery is not available."""
     try:
         logger.info(f"🎬 Starting synchronous video processing for job {job_id}")
+        
+        # Update progress: Analyzing video
+        from app.db.base import get_db_session
+        from app.db import crud
+        with get_db_session() as db:
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                progress_details={"description": "Analyzing video structure...", "percentage": 55})
         
         # Generate moments for clips (simplified version)
         import random
@@ -465,6 +566,11 @@ def process_video_sync(
         
         logger.info(f"📋 Generated {len(moments)} moments for processing")
         
+        # Update progress: Starting clip generation
+        with get_db_session() as db:
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                progress_details={"description": f"Generating {len(moments)} video clips...", "percentage": 60})
+        
         # Process clips using existing parallel processing
         flags = {
             'add_captions': add_captions,
@@ -472,7 +578,7 @@ def process_video_sync(
             'platforms': platforms
         }
         
-        clip_results = process_clips_parallel(
+        clip_results = process_clips_parallel_with_progress(
             source_video_path=video_path,
             moments=moments,
             flags=flags,
@@ -483,6 +589,11 @@ def process_video_sync(
         
         # Filter successful clips and format output
         successful_clips = [result for result in clip_results if result.get('success')]
+        
+        # Final progress update
+        with get_db_session() as db:
+            crud.update_job_full_status(db, job_id, "IN_PROGRESS", 
+                progress_details={"description": f"Finalizing {len(successful_clips)} clips...", "percentage": 95})
         
         logger.info(f"✅ Synchronous processing complete: {len(successful_clips)} clips created")
         

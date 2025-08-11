@@ -51,18 +51,37 @@ async def create_videoclip_job_upload(
             detail=f"Video processing limit reached. You have {user_plan['video_credits_remaining']} credits remaining. Upgrade your plan to continue."
         )
     
-    # SECURITY: Advanced rate limiting with user-specific limits
-    rate_info = await rate_limiter.check_rate_limit(
-        request, 
-        "upload", 
-        user_id=str(current_user.id)
-    )
+    # Get user plan first
+    user_plan = payment_service.get_user_plan(db, current_user.id)
+    
+    # SECURITY: Advanced rate limiting with user-specific limits - skip for enterprise users
+    rate_info = None
+    if user_plan['plan'] != 'enterprise':
+        rate_info = await rate_limiter.check_rate_limit(
+            request, 
+            "upload", 
+            user_id=str(current_user.id)
+        )
+        logger.info(f"Rate limit status: {rate_info['remaining']}/{rate_info['limit']} remaining")
+    else:
+        # For enterprise users, set default rate info values
+        rate_info = {
+            'remaining': 999999,
+            'limit': 999999,
+            'reset': 0
+        }
     
     logger.info(f"Received upload request from user {current_user.id} - File: {file.filename}, Captions: {add_captions}")
-    logger.info(f"Rate limit status: {rate_info['remaining']}/{rate_info['limit']} remaining")
 
     # SECURITY: Comprehensive file validation using new security service
-    validation_result = await file_validator.validate_upload(file, str(current_user.id))
+    # For enterprise users, skip user limits check since they have unlimited access
+    skip_limits = user_plan['plan'] == 'enterprise'
+    
+    validation_result = await file_validator.validate_upload(
+        file, 
+        str(current_user.id), 
+        skip_user_limits=skip_limits
+    )
     if not validation_result['valid']:
         raise HTTPException(status_code=400, detail=validation_result['error'])
     
@@ -115,6 +134,7 @@ async def create_videoclip_job_upload(
         platform_list = ["TikTok", "Instagram", "YouTube"]
     
     # Start background job with enhanced error handling
+    success = False  # Initialize success variable
     try:
         # Check if we should use fallback immediately
         if celery_error_handler.state_manager.should_use_fallback():
@@ -148,10 +168,9 @@ async def create_videoclip_job_upload(
         
         # Use enhanced error handler for fallback
         try:
-            success = celery_error_handler.handle_task_error(
-                task_id=job_id,
-                error=e,
-                fallback_func=tasks.run_videoclip_upload_job_sync,
+            # Fallback to synchronous processing
+            logger.info(f"Attempting synchronous fallback for job {job_id}")
+            success = tasks.run_videoclip_upload_job_sync(
                 job_id=job_id,
                 user_id=current_user.id,
                 video_path=file_path,
@@ -161,12 +180,14 @@ async def create_videoclip_job_upload(
             )
             
         except Exception as fallback_error:
+            success = False
             logger.error(f"❌ Enhanced fallback also failed: {fallback_error}")
             
             # Safe job status update
-            celery_error_handler.persistence_handler.safe_job_update(
-                db, job_id, "failed", error_message=f"Processing failed: {str(fallback_error)}"
-            )
+            try:
+                crud.update_job_full_status(db, job_id, "FAILED", error_message=f"Processing failed: {str(fallback_error)}")
+            except Exception as update_error:
+                logger.error(f"Failed to update job status: {update_error}")
             
             # Clean up uploaded file
             if os.path.exists(file_path):
@@ -180,9 +201,10 @@ async def create_videoclip_job_upload(
     # Handle synchronous processing result
     if not success:
         logger.error(f"❌ Video processing failed for job {job_id}")
-        celery_error_handler.persistence_handler.safe_job_update(
-            db, job_id, "failed", error_message="Video processing failed"
-        )
+        try:
+            crud.update_job_full_status(db, job_id, "FAILED", error_message="Video processing failed")
+        except Exception as update_error:
+            logger.error(f"Failed to update job status: {update_error}")
         
         # Clean up uploaded file
         if os.path.exists(file_path):
@@ -197,9 +219,9 @@ async def create_videoclip_job_upload(
         "job_id": job_id, 
         "message": f"Video processing started for {sanitized_filename}.",
         "rate_limit": {
-            "remaining": rate_info['remaining'],
-            "limit": rate_info['limit'],
-            "reset_time": rate_info['reset']
+            "remaining": rate_info['remaining'] if rate_info else 999999,
+            "limit": rate_info['limit'] if rate_info else 999999,
+            "reset_time": rate_info['reset'] if rate_info else 0
         }
     }
 
@@ -216,10 +238,14 @@ async def init_chunked_upload(
 ):
     """Initialize a chunked upload session for large video files."""
     
-    # Rate limiting
-    rate_info = await rate_limiter.check_rate_limit(
-        request, "upload", user_id=str(current_user.id)
-    )
+    # Check user plan first
+    user_plan = payment_service.get_user_plan(db, current_user.id)
+    
+    # Rate limiting - skip for enterprise users
+    if user_plan['plan'] != 'enterprise':
+        rate_info = await rate_limiter.check_rate_limit(
+            request, "upload", user_id=str(current_user.id)
+        )
     
     # Validate file size
     if file_size > MAX_FILE_SIZE:
